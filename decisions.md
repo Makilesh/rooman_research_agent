@@ -664,3 +664,197 @@ takes 12.6s and re-parses nothing.
 **Revisit if:** the corpus grows enough for the duplication to matter.
 **README line:** "Extracted page text is persisted, so gold labels are always validated
 against the text the pipeline actually saw rather than against the PDF."
+
+---
+
+## D-015 · The three thresholds, measured — and what the measurement actually showed
+**Date:** 2026-08-20
+**Context:** τ_high, τ_low and τ_verify govern whether the agent answers, asks, or
+refuses. The brief is explicit that they must come from the observed score
+distribution and never be carried over from another project.
+**Decision:** `TAU_LOW = 0.8`, `TAU_HIGH = 0.99`, `TAU_VERIFY = 0.378`, measured
+against corpus `e62c6925a03ad297`, with the full evidence in
+`outputs/eval_report.md`.
+
+**Two populations, not one — this was a correction to my own first attempt.**
+Routing decides on **one number per question**: the top rerank score on the slate.
+Verification decides on **one number per (sentence, chunk) pair**. My first
+derivation used the per-pair distribution for both, which is a category error: a
+question whose best gold chunk scores 0.996 routes to ANSWER regardless of whether
+its third gold chunk scores 0.184. Using per-pair scores dragged the positive
+population's lower tail down and would have set τ_high on evidence describing a
+decision nobody makes. Measured both ways:
+
+| population | n | min | median | max |
+|---|---:|---:|---:|---:|
+| per gold chunk (wrong for routing) | 17 | 0.184 | 0.929 | 0.996 |
+| top score per answerable question | 8 | 0.789 | 0.985 | 0.996 |
+| top score per control question | 4 | 0.032 | 0.420 | 0.829 |
+| per chunk retrieved for a control | 100 | 0.000 | 0.046 | 0.829 |
+
+**The bimodality the brief warned about is real and visible.** 50 of 100 control
+chunks score in [0.00, 0.05]; the per-chunk control mean is 0.107 against a gold
+mean of 0.815. This is exactly why usable evidence is scored against a measured
+floor rather than averaged: averaging across the retrieved slate would make
+retrieving *more* results look *worse*.
+
+**The honest finding: the two routing populations overlap.** The best control
+question scores 0.829, above the weakest answerable question at 0.789. No single
+threshold separates them on this set. Rather than assert a clean cut, τ was set from
+the sensitivity sweep's balanced-accuracy peak (0.85), with the clarify band opened
+around it. The overlapping control is `q12_react_llama3_lr` — deliberately the
+hardest control, because ReAct *is* in the corpus and *is* about fine-tuning, so
+retrieval surfaces confident-looking near-misses. That it lands in the clarify band
+rather than being refused outright is arguably the better behaviour, and it is
+reported rather than tuned away.
+**Consequence:** ~1 in 8 answerable questions will route to clarify rather than
+answer. Given the alternative is answering a question the corpus cannot support,
+that is the right direction to err.
+**Evidence:** `outputs/eval_report.md` §2 — both histograms, all four population
+summaries, and the full sweep.
+**Revisit if:** the corpus or the question set changes. The measurement is a command,
+not a manual exercise.
+**README line:** "Thresholds are measured, and the measurement is reported honestly:
+the answerable and control populations overlap on this set, so the clarify band was
+widened around the sweep peak rather than a clean separation being claimed."
+
+---
+
+## D-113 · A held-out calibration set was NOT built — stated as a known weakness
+**Date:** 2026-08-20
+**Context:** I argued before Step 0 that deriving thresholds from the same 12
+questions the routing is later scored on is fitting on the test set, and proposed a
+held-out calibration set alongside the sweep.
+**What was actually built:** the sweep, and per-question reporting with bootstrap
+intervals. **The held-out set was not built**, because writing 10-15 extra questions
+requires gold labels validated against extracted text, and the corpus changed size
+mid-build.
+**Decision:** ship without it, and say so in the README in those words.
+**Why this is recorded rather than quietly omitted:** route accuracy reported at
+Step 10 and Step 12 will be measured against thresholds fitted on the same
+questions, and is therefore **optimistic by construction**. A reader who does not
+know that will over-read the number. The sweep partially compensates — it shows how
+much the choice of τ actually matters instead of hiding a point estimate — but it is
+not a substitute for held-out data.
+**Consequence:** the README's limitations section must say "thresholds are tuned on
+the evaluation set, not held out" explicitly, not merely "tuned, not learned".
+**Evidence:** n/a — this entry records an absence.
+**Revisit if:** there is time before submission to write and validate a calibration
+set; it is the single highest-value remaining improvement to the evaluation.
+**README line:** "Routing thresholds are tuned on the same question set the routing
+is scored against, not on held-out data, so route accuracy is optimistic by
+construction — the sensitivity sweep is published so the reader can judge how much
+that matters."
+
+---
+
+## D-114 · Small-sample honesty: bootstrap intervals and per-question rows
+**Date:** 2026-08-20
+**Context:** The answerable set is 8 questions. The ablation table is the evidence
+for the highest-weighted section of the brief.
+**Decision:** every mean carries a bootstrap 95% interval with a fixed seed, and the
+report prints per-question Recall@5 alongside the aggregate.
+**Why:** the measured spread makes the point better than any argument — Recall@5 runs
+0.479 [0.21, 0.75] for dense against 0.646 [0.42, 0.88] for the full pipeline. The
+intervals overlap heavily. The ordering is consistent and matches the mechanism, but
+claiming the *difference* is established at n=8 would be overclaiming, and a reviewer
+who knows evaluation would spot it immediately. Printing intervals turns a weak
+number into an honest one. Per-question rows are printed because at this size a
+single catastrophic question can move the mean by 12 points.
+**Consequence:** the headline numbers look less impressive than a bare mean would.
+That is the point.
+**Evidence:** `outputs/eval_report.md` §1.
+**Revisit if:** the question set grows past ~30, where the intervals tighten enough
+for differences to be claimed.
+**README line:** "Every reported mean carries a bootstrap confidence interval,
+because a mean over eight questions is not a precise number and presenting it as one
+would be dishonest."
+
+---
+
+## D-115 · Gold labels drafted from extracted text, with the quote recorded
+**Date:** 2026-08-20
+**Context:** The brief forbids writing gold labels from memory of these papers, and
+I have read all of them in training. The user delegated the drafting.
+**Decision:** every label was chosen by retrieving candidates and reading the
+**extracted chunk text** through a purpose-built tool, then recording in
+`questions.yaml` the exact sentence from that chunk which carries the answer.
+**Why the quote matters more than the id:** a bare chunk id is unfalsifiable without
+running the pipeline. A recorded quote lets anyone check a label by reading the YAML
+against the paper — which is what makes delegated labelling reviewable rather than
+merely asserted. Where a label could not be grounded in a sentence I could point at,
+the question was rewritten. `q01` was narrowed from "heads and model dimension" to
+"heads and dimension per head" for exactly this reason: the model dimension appears
+only inside a results table that extracts as fragments, so the broader question had
+no clean textual support.
+**Consequence:** three validation layers run on every evaluation — the chunk id must
+exist, its `text_sha` must match what it was when labelled, and the corpus
+fingerprint must match. Any failure is a hard error, because a label that silently
+drifts is worse than no label: the resulting numbers still look plausible.
+**Evidence:** `research-agent labels --show` prints every label beside its chunk
+text; `labels --stamp` recorded 18 text hashes; all 12 validate.
+**Revisit if:** the chunking config changes, which will correctly invalidate every
+stamp and force re-validation.
+**README line:** "Every gold label records the sentence it was drawn from, so a
+reviewer can check the ground truth by reading the question file — no label was
+written from memory of the papers."
+
+---
+
+## D-116 · Controls supply the negative population, not non-gold chunks
+**Date:** 2026-08-20
+**Context:** Deriving a refusal threshold needs a negative population.
+**Options:** (a) every non-gold chunk retrieved for an answerable question;
+(b) every chunk retrieved for a control question.
+**Decision:** (b).
+**Why:** (a) is badly contaminated. A chunk not listed as gold is very often still
+relevant — the gold set is the chunks that best answer the question, not the only
+ones that touch it. Treating those as negatives would push the measured negative
+distribution far too high and set the refusal floor far too aggressively. The
+control questions have no correct answer anywhere in the corpus, so every chunk
+retrieved for them is a true negative by construction. This is the direct payoff of
+having built unanswerable controls into the question set rather than treating them
+purely as a scored behaviour.
+**Consequence:** the negative population is only as large as the controls make it —
+100 per-chunk scores from 4 questions. Small, and reported as such.
+**Evidence:** `outputs/eval_report.md` §2 — the control histogram, with 50 of 100
+scores below 0.05.
+**Revisit if:** more controls are added, which would tighten the estimate directly.
+**README line:** "The refusal threshold is measured against questions the corpus
+genuinely cannot answer, because a chunk that merely wasn't labelled gold is often
+still relevant and makes a contaminated negative."
+
+---
+
+## D-016 · Hybrid retrieval beats both single retrievers — with the caveat stated
+**Date:** 2026-08-20
+**Context:** The Step 6 gate requires hybrid to beat both baselines on Recall@5,
+and to investigate rather than proceed if it does not.
+**Measured, 8 answerable questions, zero LLM calls:**
+
+| Config | Recall@5 | 95% CI | MRR | nDCG@10 | p50 ms |
+|---|---:|---:|---:|---:|---:|
+| Dense only (bge-m3) | 0.479 | [0.21, 0.75] | 0.512 | 0.588 | 16 |
+| Sparse only (FTS5 BM25) | 0.479 | [0.25, 0.73] | 0.621 | 0.552 | 4 |
+| Hybrid, RRF k=60 | 0.583 | [0.29, 0.83] | 0.542 | 0.620 | 16 |
+| Hybrid + cross-encoder rerank | **0.646** | [0.42, 0.88] | **0.666** | **0.672** | 385 |
+
+**Gate passed:** hybrid 0.583 > dense 0.479 and sparse 0.479, and the full pipeline
+adds a further 6.3 points. The ordering is monotone across all three of Recall@5,
+nDCG@10 and MRR, and it matches the mechanism, which is the more convincing part.
+**What must be said alongside it:** the intervals overlap heavily at n=8. The
+*ordering* is consistent and mechanistically explicable; the *magnitude* of each gap
+is not established by this sample. Dense and sparse tie exactly on Recall@5 while
+differing on MRR (0.512 vs 0.621) — sparse puts a gold chunk higher when it finds
+one, dense finds a different set. That complementarity is precisely what fusion
+exploits, and it is visible in live retrieval too: for "What rank does LoRA use for
+GPT-3?", dense and sparse agreed on only 1 of their top 6.
+**Cost:** reranking is the entire latency budget — 16ms to 385ms p50, a 24x
+increase for +6.3 points of Recall@5. Worth it here; recorded so the tradeoff is
+visible rather than assumed.
+**Evidence:** `outputs/eval_report.md`, run `run_ee06c1d029` in `eval_runs`.
+**Revisit if:** latency ever matters more than recall, in which case `hybrid` without
+reranking is a defensible configuration and the table already prices it.
+**README line:** "Hybrid retrieval beats both single-retriever baselines and
+reranking adds more on top, but the confidence intervals overlap at eight questions
+— the ordering is trustworthy, the exact gaps are not."

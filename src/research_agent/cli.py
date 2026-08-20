@@ -14,8 +14,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import corpus, db
+from . import corpus, db, evaluate, report
 from . import ingest as ingest_mod
+from . import labels as labels_mod
 from . import index as index_mod
 from . import rerank as rerank_mod
 from . import retrieve
@@ -298,6 +299,18 @@ def ingest(
     db.migrate(conn)
     entries = corpus.load_manifest(cfg)
 
+    # A document dropped from the manifest must leave the database too. Otherwise the
+    # index keeps serving a paper the corpus no longer claims to contain, and a
+    # citation can point at a source that is no longer part of the deliverable.
+    keep = {e.doc_id for e in entries}
+    stale = [r["doc_id"] for r in db.all_rows(conn, "SELECT doc_id FROM documents")
+             if r["doc_id"] not in keep]
+    for doc_id in stale:
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        _warn(f"pruned {doc_id}", "no longer in the manifest; its chunks are gone too")
+    if stale:
+        conn.commit()
+
     stats = []
     for entry in entries:
         path = cfg.sources_dir / entry.filename
@@ -513,6 +526,201 @@ def ask(
                    f"#{fused_rank.get(h.chunk_id, 0)}", h.doc_id, str(h.page_start),
                    (h.section or "")[:22], " ".join(h.text.split())[:60])
     console.print(t4)
+
+
+@app.command()
+def labels(
+    stamp: bool = typer.Option(False, "--stamp", help="Record each gold chunk's text_sha."),
+    show: bool = typer.Option(False, "--show", help="Print every label beside its chunk text."),
+    chars: int = typer.Option(700, "--chars", help="How much chunk text to print."),
+) -> None:
+    """Validate the gold labels against the text the pipeline actually extracted.
+
+    Fabricated ground truth invalidates every number downstream while looking
+    perfectly healthy, so labels are checked rather than trusted.
+    """
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    fingerprint = index_mod.load_fingerprint(conn)
+
+    if stamp:
+        n = labels_mod.stamp(cfg, conn)
+        _ok(f"stamped text_sha for {n} gold chunk(s)")
+
+    label_set = labels_mod.load(cfg)
+    console.print(f"{len(label_set.items)} questions · "
+                  f"{len(label_set.answerable)} answerable · "
+                  f"{len(label_set.controls)} controls")
+    console.print(f"labelled against corpus {label_set.fingerprint_at_labelling} "
+                  f"on {label_set.labelled_on}; index is now {fingerprint}\n")
+
+    counts: dict[str, int] = {}
+    for item in label_set.items:
+        counts[item.cls] = counts.get(item.cls, 0) + 1
+    t = Table(show_edge=False)
+    t.add_column("class"); t.add_column("n", justify="right"); t.add_column("behaviour")
+    for cls, n in counts.items():
+        behaviour = {
+            "single_hop": "answer, 1-2 citations, correct paper",
+            "multi_hop": "answer citing >= 2 papers",
+            "unanswerable": "explicit refusal, zero citations",
+            "false_premise": "reject the premise, cite what the sources do say",
+        }.get(cls, "")
+        t.add_row(cls, str(n), behaviour)
+    console.print(t)
+
+    if show:
+        chunks = labels_mod.fetch_chunks(
+            conn, [c for i in label_set.items for c in i.gold_chunks]
+        )
+        for item in label_set.items:
+            console.print()
+            console.rule(f"[bold cyan]{item.id} · {item.cls}")
+            console.print(f"[bold]{item.question}[/bold]")
+            if item.false_premise_is:
+                console.print(f"[yellow]false premise:[/yellow] {item.false_premise_is}")
+            if item.why_unanswerable:
+                console.print(f"[yellow]unanswerable:[/yellow] {item.why_unanswerable}")
+            if not item.gold_chunks:
+                console.print("[dim]no gold chunks — a control question has no correct "
+                              "citation by construction.[/dim]")
+                continue
+            for cid in item.gold_chunks:
+                row = chunks.get(cid)
+                if row is None:
+                    _fail(cid, "does not exist")
+                    continue
+                console.print(f"\n  [green]{cid}[/green]  {row['doc_id']} "
+                              f"p.{row['page_start']} §{row['section'] or '-'}")
+                console.print("  " + " ".join(row["text"].split())[:chars])
+
+    problems = labels_mod.validate(cfg, conn, label_set, fingerprint)
+    console.print()
+    if problems:
+        for p in problems:
+            _fail(p)
+        raise typer.Exit(1)
+    _ok(f"all {len(label_set.items)} labels validate",
+        "ids exist, text hashes match, classes agree with expected behaviour")
+
+
+@app.command("eval-retrieval")
+def eval_retrieval(
+    thresholds: bool = typer.Option(
+        True, "--thresholds/--no-thresholds", help="Also derive the routing thresholds."
+    ),
+    write: bool = typer.Option(True, "--write/--no-write", help="Write outputs/eval_report.md."),
+) -> None:
+    """LLM-free retrieval ablation and threshold derivation. Consumes zero quota."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    label_set = labels_mod.load(cfg)
+    problems = labels_mod.validate(cfg, conn, label_set, index_mod.load_fingerprint(conn))
+    if problems:
+        for p in problems:
+            _fail(p)
+        console.print("\n[red]Refusing to evaluate against unvalidated labels.[/red]")
+        raise typer.Exit(1)
+    _ok(f"{len(label_set.items)} labels validated against the current index")
+
+    calls_before = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    retrievers = evaluate.Retrievers(cfg, conn)
+
+    results = []
+    for config in evaluate.CONFIGS:
+        res = evaluate.evaluate_config(retrievers, label_set.items, config)
+        results.append(res)
+        console.print(f"  {config:<16} {len(res.items)} questions scored")
+
+    t = Table(show_edge=False, title_justify="left",
+              title=f"RETRIEVAL ABLATION — {len(results[0].items)} answerable questions, "
+                    f"zero LLM calls")
+    t.add_column("config"); t.add_column("Recall@5", justify="right")
+    t.add_column("95% CI", justify="right"); t.add_column("MRR", justify="right")
+    t.add_column("nDCG@10", justify="right"); t.add_column("p50 ms", justify="right")
+    t.add_column("p95 ms", justify="right")
+    for res in results:
+        lo, hi = res.ci95(lambda i: i.recall_at(5))
+        t.add_row(res.config, f"{res.mean(lambda i: i.recall_at(5)):.3f}",
+                  f"[{lo:.2f}, {hi:.2f}]",
+                  f"{res.mean(lambda i: i.mrr()):.3f}",
+                  f"{res.mean(lambda i: i.ndcg_at(10)):.3f}",
+                  f"{res.p50_latency():.0f}", f"{res.p95_latency():.0f}")
+    console.print()
+    console.print(t)
+
+    by_name = {r.config: r for r in results}
+    hybrid = by_name["hybrid"].mean(lambda i: i.recall_at(5))
+    dense = by_name["dense"].mean(lambda i: i.recall_at(5))
+    sparse = by_name["sparse"].mean(lambda i: i.recall_at(5))
+    console.print()
+    if hybrid >= max(dense, sparse):
+        _ok("hybrid >= both single-retriever baselines on Recall@5",
+            f"hybrid {hybrid:.3f} vs dense {dense:.3f}, sparse {sparse:.3f}")
+    else:
+        _fail("hybrid does NOT beat both baselines on Recall@5",
+              f"hybrid {hybrid:.3f} vs dense {dense:.3f}, sparse {sparse:.3f} — investigate")
+
+    run_id = evaluate.persist(conn, cfg, results, notes="llm-free retrieval ablation")
+    _ok(f"persisted as {run_id}", "eval_runs / eval_results")
+
+    evidence = None
+    if thresholds:
+        console.print()
+        console.rule("[bold]THRESHOLD DERIVATION")
+        evidence = evaluate.derive_thresholds(retrievers, label_set, cfg)
+        for pop in (evidence.routing_positives, evidence.routing_negatives,
+                    evidence.pair_positives, evidence.pair_negatives):
+            console.print(f"\n[bold]{pop.name}[/bold]  (n={pop.n})")
+            s = pop.summary()
+            console.print("  " + "  ".join(f"{k}={v:.3f}" if k != "n" else f"n={int(v)}"
+                                           for k, v in s.items()))
+            for line in rerank_mod.histogram(pop):
+                console.print(line)
+
+        console.print("\n[bold]Sensitivity sweep[/bold]  "
+                      "(what each candidate tau would actually do)")
+        console.print("   tau  | gold kept | control rejected | balanced")
+        for tau, keep, rej in zip(evidence.sweep.taus,
+                                  evidence.sweep.positive_retention,
+                                  evidence.sweep.negative_rejection):
+            if round(tau * 40) % 4:
+                continue
+            console.print(f"  {tau:.2f} |   {keep:6.1%}  |     {rej:6.1%}       "
+                          f"|  {(keep + rej) / 2:6.1%}")
+        best_tau, best_bal = evidence.sweep.best_f1()
+        console.print(f"\n  balanced-accuracy peak at tau={best_tau:.2f} ({best_bal:.1%})")
+        if not evidence.separable:
+            console.print()
+            _warn("the two routing populations OVERLAP",
+                  "no single threshold separates them cleanly")
+        for name, value in (("TAU_LOW", evidence.tau_low),
+                            ("TAU_HIGH", evidence.tau_high),
+                            ("TAU_VERIFY", evidence.tau_verify)):
+            console.print(f"\n  [bold]{name} = {value}[/bold]")
+            console.print(f"    [dim]{evidence.derivation.get(name.lower(), '')}[/dim]")
+        console.print(f"\n  Between {evidence.tau_low} and {evidence.tau_high} the "
+                      f"agent asks rather than guesses.")
+
+    calls_after = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    console.print()
+    if calls_after == calls_before:
+        _ok(f"zero LLM calls consumed", f"ledger unchanged at {calls_after} rows")
+    else:
+        _fail(f"{calls_after - calls_before} LLM calls consumed",
+              "retrieval evaluation must be model-independent")
+
+    if write:
+        path = report.write_eval_report(cfg, results, label_set, evidence)
+        _ok(f"wrote {path.relative_to(cfg.repo_root)}")
 
 
 @app.command("db")

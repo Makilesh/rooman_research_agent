@@ -32,3 +32,6 @@ dist/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Private working notes — not part of the deliverable (user instruction 2026-08-20)
+m/
