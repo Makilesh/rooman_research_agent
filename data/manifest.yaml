@@ -4,6 +4,8 @@
 # the corpus exactly, keeps the repository small, and avoids redistributing anyone
 # else's paper (decisions.md D-006).
 #
+# Corpus trimmed to 11 papers on 2026-08-20 (DPO and Self-RAG removed).
+#
 # arxiv_id is VERSION-PINNED. A bare id resolves to the latest revision, so an
 # unpinned corpus can silently change underneath the gold labels: a new revision
 # means a new sha256, new chunk ids, and an evaluation scored against chunks that no
@@ -63,7 +65,7 @@ documents:
     title: "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
     first_author: "Jason Wei"
     published: "2022-01-28"
-    role: "Reasoning thread."
+    role: "Reasoning thread; pairs with ReAct."
 
   - doc_id: qlora
     arxiv_id: 2305.14314v1
@@ -84,14 +86,7 @@ documents:
     title: "Training language models to follow instructions with human feedback"
     first_author: "Long Ouyang"
     published: "2022-03-04"
-    role: "RLHF; pairs with DPO."
-
-  - doc_id: dpo
-    arxiv_id: 2305.18290v3
-    title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model"
-    first_author: "Rafael Rafailov"
-    published: "2023-05-29"
-    role: "Defined against InstructGPT -- ideal multi-hop material."
+    role: "RLHF and instruction tuning; contrasts directly with GPT-3 few-shot."
 
   - doc_id: react
     arxiv_id: 2210.03629v3
@@ -99,10 +94,3 @@ documents:
     first_author: "Shunyu Yao"
     published: "2022-10-06"
     role: "Agent thread; ties to this project's own retrieval loop."
-
-  - doc_id: selfrag
-    arxiv_id: 2310.11511v1
-    title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
-    first_author: "Akari Asai"
-    published: "2023-10-17"
-    role: "Extends RAG; adaptive retrieval."

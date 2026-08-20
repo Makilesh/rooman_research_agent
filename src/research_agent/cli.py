@@ -298,6 +298,18 @@ def ingest(
     db.migrate(conn)
     entries = corpus.load_manifest(cfg)
 
+    # A document dropped from the manifest must leave the database too. Otherwise the
+    # index keeps serving a paper the corpus no longer claims to contain, and a
+    # citation can point at a source that is no longer part of the deliverable.
+    keep = {e.doc_id for e in entries}
+    stale = [r["doc_id"] for r in db.all_rows(conn, "SELECT doc_id FROM documents")
+             if r["doc_id"] not in keep]
+    for doc_id in stale:
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        _warn(f"pruned {doc_id}", "no longer in the manifest; its chunks are gone too")
+    if stale:
+        conn.commit()
+
     stats = []
     for entry in entries:
         path = cfg.sources_dir / entry.filename
