@@ -1,0 +1,30 @@
+{
+  "question": "What learning rate does the ReAct paper use when fine-tuning Llama 3?",
+  "insufficient_evidence": true,
+  "refusal_reason": "The passages given only mention learning rates in general (pp.8-9) or specifically for hyperparameter searches (pp.2), but do not specify the exact value used when fine-tuning Llama 3.",
+  "sentences": [],
+  "sources": [
+    {
+      "chunk_id": "p_qlora_0003",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 5,
+      "page_end": 6,
+      "section": "3 QLORA Finetuning",
+      "rerank_score": 0.5474942922592163
+    },
+    {
+      "chunk_id": "p_qlora_0005",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 8,
+      "page_end": 9,
+      "section": "5 Pushing the Chatbot State-of-the-art with QLoRA",
+      "rerank_score": 0.3807013928890228
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 3360,
+  "turn_id": "t_64bce1a47465"
+}

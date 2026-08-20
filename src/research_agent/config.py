@@ -77,7 +77,16 @@ class Config:
     ollama_model: str = "llama3.1:8b"
     # Sequential 14B-class: only loadable once the encoders are freed.
     ollama_model_large: str = "qwen2.5:14b"
-    ollama_timeout_s: float = 180.0
+    ollama_timeout_s: float = 300.0
+    # Ollama's default context window is 4096 tokens and it TRUNCATES SILENTLY above
+    # it -- no error, no warning, just an answer written from half the sources. The
+    # context here is ~6 parent passages, so this must be set explicitly and the
+    # actual prompt_eval_count checked against it on every call.
+    ollama_num_ctx: int = 8192
+    # Keep the model resident between calls. With the encoders holding ~2.2 GB,
+    # Ollama's scheduler otherwise evicts and reloads a 5.5 GB model repeatedly, and
+    # a reload costs ~30s of pure disk I/O per turn.
+    ollama_keep_alive: str = "15m"
     gemini_key_env_prefix: str = "GEMINI_API_KEY_"
     gemini_max_keys: int = 3
     gemini_timeout_s: float = 60.0
@@ -114,17 +123,31 @@ class Config:
     rrf_k: int = 60
     rerank_candidates: int = 25
     context_top_n: int = 6
+    # Token budget for the SOURCES block. Parent passages run ~2000 tokens each, so
+    # six of them overflow an 8192 window before the prompt template is even added.
+    # Passages are dropped whole from the bottom of the ranking rather than being
+    # text-truncated: a half-present passage would break the verifier's guarantee
+    # that it scores against exactly what the synthesiser saw, and could let the
+    # model cite text it never received.
+    context_max_tokens: int = 5200
 
     # -- Thresholds ---------------------------------------------------------
-    # PLACEHOLDERS -- deliberately unusable. Real values are measured from the
-    # rerank score distribution in Step 5 and written back through the env.
-    # Nothing before Step 5 may read them; require_measured_thresholds() enforces
-    # that, because a zero threshold routes every query to ANSWER, which is a
-    # silent confident failure rather than a visible one.
-    thresholds_are_measured: bool = False
-    tau_high: float = 0.0
-    tau_low: float = 0.0
-    tau_verify: float = 0.0
+    # MEASURED 2026-08-20 against corpus e62c6925a03ad297 by `eval-retrieval`.
+    # Full evidence -- both score histograms, all four population summaries, and the
+    # sensitivity sweep -- is in outputs/eval_report.md.
+    #
+    # These are defaults rather than env-only values so a clean clone answers a
+    # question with no .env file at all. They are facts measured on this corpus, and
+    # this file is where measured numbers belong. Re-measure if the corpus changes:
+    # `require_measured_thresholds()` still guards every caller, and the flag below
+    # is what a re-measurement would flip.
+    #
+    # Honest caveat, repeated in the README: these are tuned on the same question set
+    # the routing is later scored against, not on held-out data (decisions.md D-113).
+    thresholds_are_measured: bool = True
+    tau_low: float = 0.8       # below this, refuse
+    tau_high: float = 0.99     # above this, answer directly; between the two, ask
+    tau_verify: float = 0.378  # groundedness floor for one cited sentence
 
     # -- Conversation (section 4.1) -----------------------------------------
     history_max_turns: int = 6

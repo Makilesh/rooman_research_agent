@@ -1,0 +1,39 @@
+{
+  "question": "Under what licence were the Llama 2 model weights released?",
+  "insufficient_evidence": true,
+  "refusal_reason": "The passages do not mention the license under which the Llama 2 model weights were released.",
+  "sentences": [],
+  "sources": [
+    {
+      "chunk_id": "p_qlora_0016",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 24,
+      "page_end": 26,
+      "section": "C Human Evaluation",
+      "rerank_score": 0.03210070729255676
+    },
+    {
+      "chunk_id": "p_qlora_0005",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 8,
+      "page_end": 9,
+      "section": "5 Pushing the Chatbot State-of-the-art with QLoRA",
+      "rerank_score": 0.029367854818701744
+    },
+    {
+      "chunk_id": "p_qlora_0002",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 3,
+      "page_end": 5,
+      "section": "2 Background",
+      "rerank_score": 0.02838212065398693
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 3328,
+  "turn_id": "t_dd50bc22b203"
+}

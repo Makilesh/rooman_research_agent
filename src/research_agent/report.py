@@ -227,3 +227,99 @@ def write_eval_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------
+#  Cited answers
+# ---------------------------------------------------------------------------
+def render_answer_markdown(answer) -> str:
+    """Markdown with numbered footnotes rendered as "Paper Title · p.N".
+
+    Footnote numbering is assigned in order of first appearance in the answer, so
+    "the second source" means the second footnote a reader sees. That ordering is
+    the thing a follow-up turn resolves against, so it is defined here rather than
+    left to whatever order retrieval happened to return.
+    """
+    lines: list[str] = [f"# {answer.question}", ""]
+
+    if answer.is_refusal:
+        lines += [
+            "**The sources do not contain an answer to this question.**", "",
+            answer.refusal_reason or "No supporting passage was found in the corpus.",
+            "", "_No citations are given, because there is nothing in the corpus to "
+            "cite. This is the intended behaviour, not a failure._", "",
+        ]
+    else:
+        order: list[str] = []
+        for s in answer.sentences:
+            for cid in s.chunk_ids:
+                if cid not in order:
+                    order.append(cid)
+        number = {cid: i + 1 for i, cid in enumerate(order)}
+
+        body = []
+        for s in answer.sentences:
+            marks = "".join(f"[^{number[c]}]" for c in s.chunk_ids)
+            flag = " `[unverified]`" if s.status == "unverified" else ""
+            body.append(f"{s.text}{marks}{flag}")
+        lines += [" ".join(body), "", "## Sources", ""]
+
+        for cid in order:
+            hit = answer.hit_by_id(cid)
+            label = hit.source_label if hit else cid
+            lines.append(f"[^{number[cid]}]: {label} — `{cid}`")
+        lines.append("")
+
+    lines += [
+        "---", "",
+        f"- Provider: `{answer.provider}` · model: `{answer.model}`",
+        f"- Latency: {answer.latency_ms} ms",
+        f"- Passages in context: {len(answer.hits)}",
+    ]
+    if answer.top_rerank_score is not None:
+        lines.append(f"- Top rerank score: {answer.top_rerank_score:.4f}")
+    statuses: dict[str, int] = {}
+    for s in answer.sentences:
+        statuses[s.status] = statuses.get(s.status, 0) + 1
+    if statuses:
+        lines.append("- Sentence verification: " +
+                     ", ".join(f"{k} {v}" for k, v in sorted(statuses.items())))
+    return "\n".join(lines) + "\n"
+
+
+def answer_to_dict(answer) -> dict:
+    """The machine-checkable form. This is the citation contract as data."""
+    return {
+        "question": answer.question,
+        "insufficient_evidence": answer.insufficient_evidence,
+        "refusal_reason": answer.refusal_reason,
+        "sentences": [
+            {"idx": s.idx, "text": s.text, "cite": s.chunk_ids,
+             "verify_scores": s.verify_scores, "status": s.status}
+            for s in answer.sentences
+        ],
+        "sources": [
+            {"chunk_id": h.chunk_id, "doc_id": h.doc_id, "title": h.title,
+             "page_start": h.page_start, "page_end": h.page_end,
+             "section": h.section, "rerank_score": h.rerank_score}
+            for h in answer.hits
+        ],
+        "provider": answer.provider,
+        "model": answer.model,
+        "latency_ms": answer.latency_ms,
+        "turn_id": answer.turn_id,
+    }
+
+
+def write_answer(cfg, answer, item_id: str):
+    """Write the .md and .json pair that gets committed to outputs/."""
+    import json as _json
+
+    out = cfg.outputs_dir / "answers"
+    out.mkdir(parents=True, exist_ok=True)
+    md = out / f"{item_id}.md"
+    js = out / f"{item_id}.json"
+    md.write_text(render_answer_markdown(answer), encoding="utf-8")
+    js.write_text(_json.dumps(answer_to_dict(answer), indent=2, ensure_ascii=False),
+                  encoding="utf-8")
+    return md, js

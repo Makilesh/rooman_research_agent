@@ -9,19 +9,23 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
+from dataclasses import replace
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from . import answer as answer_mod
 from . import corpus, db, evaluate, report
+from . import verify as verify_mod
 from . import ingest as ingest_mod
 from . import labels as labels_mod
 from . import index as index_mod
 from . import rerank as rerank_mod
 from . import retrieve
 from .config import Config
-from .llm import LLMClient, OllamaProvider
+from .llm import LLMClient, OllamaProvider, QuotaExhausted
 
 # Windows consoles default to cp1252, which cannot encode box-drawing characters,
 # em dashes, or the accented author names and mathematical symbols that arXiv text
@@ -438,6 +442,87 @@ def index_cmd() -> None:
         raise typer.Exit(1)
 
 
+_MODELS: dict = {}
+
+
+def _load_models(cfg: Config):
+    """Load the encoders once per process. A batch of twelve questions would
+    otherwise pay the load cost twelve times."""
+    if not _MODELS:
+        _MODELS['embedder'] = index_mod.load_embedder(cfg)
+        _MODELS['vectors'] = index_mod.load_vectors(cfg)
+        _MODELS['reranker'] = rerank_mod.load_reranker(cfg)
+    return _MODELS['embedder'], _MODELS['vectors'], _MODELS['reranker']
+
+
+def _answer_once(cfg: Config, question: str, provider: str | None,
+                 save: str | None, show_retrieval: bool, quiet: bool = False):
+    """Retrieve, synthesise, verify, persist, render. One turn, end to end."""
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    embedder, vectors, reranker = _load_models(cfg)
+
+    dense = retrieve.dense_search(
+        conn, retrieve.embed_query(embedder, question), vectors, cfg)
+    sparse = retrieve.sparse_search(conn, question, cfg)
+    fused = retrieve.reciprocal_rank_fusion(dense, sparse, cfg)
+    top = rerank_mod.rerank(reranker, question, fused, cfg)
+    # Retrieval wants precision, synthesis wants context: answer over the parent
+    # passages the winning children came from.
+    context_hits = retrieve.fit_context_budget(
+        retrieve.expand_to_parents(conn, top), cfg,
+        count_tokens=index_mod.token_counter(embedder),
+    )
+
+    if show_retrieval:
+        t = Table(show_edge=False, title_justify="left", title="CONTEXT")
+        for c, j in (("#", "right"), ("rerank", "right"), ("chunk", "left"),
+                     ("paper", "left"), ("page", "right")):
+            t.add_column(c, justify=j)  # type: ignore[arg-type]
+        for h in context_hits:
+            t.add_row(str(h.rank), f"{h.rerank_score:.4f}" if h.rerank_score else "-",
+                      h.chunk_id, h.doc_id, str(h.page_start))
+        console.print(t)
+        console.print()
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    try:
+        result = answer_mod.synthesise(cfg, client, question, context_hits,
+                                       provider=provider)
+    except answer_mod.InventedCitation as exc:
+        _fail("fabricated citation", str(exc))
+        raise typer.Exit(1)
+    except QuotaExhausted as exc:
+        _fail("quota exhausted", str(exc))
+        raise typer.Exit(1)
+
+    result = verify_mod.verify_answer(cfg, reranker, result)
+
+    route = "refuse" if result.is_refusal else "answer"
+    session = answer_mod.ensure_session(
+        conn, f"s_ask_{uuid.uuid4().hex[:8]}", index_mod.load_fingerprint(conn))
+    turn_id = answer_mod.persist(conn, result, session, ord_=1, route=route)
+    result = replace(result, turn_id=turn_id)
+
+    # rich treats [unverified] and [^1] as console markup and swallows them.
+    if not quiet:
+        console.print(report.render_answer_markdown(result), markup=False,
+                      highlight=False)
+
+    if save:
+        md, js = report.write_answer(cfg, result, save)
+        if not quiet:
+            _ok(f"wrote {md.relative_to(cfg.repo_root)} and {js.name}")
+    return result
+
+
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="The question to retrieve for."),
@@ -445,14 +530,17 @@ def ask(
         False, "--retrieve-only", help="Show retrieval only; no generation."
     ),
     k: int = typer.Option(10, "--k", help="How many results to show per retriever."),
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    save: str = typer.Option(None, "--save", help="Write outputs/answers/<id>.{md,json}."),
+    show_retrieval: bool = typer.Option(
+        False, "--show-retrieval", help="Also print the retrieval tables."
+    ),
 ) -> None:
-    """Retrieve for a question. Generation arrives at Step 7."""
-    if not retrieve_only:
-        console.print("[yellow]Only --retrieve-only is implemented so far "
-                      "(generation lands at Step 7).[/yellow]")
-        raise typer.Exit(1)
-
+    """Ask a question and get a cited answer, or an explicit refusal."""
     cfg = Config.load()
+    if not retrieve_only:
+        _answer_once(cfg, question, provider, save, show_retrieval)
+        return
     conn = db.connect(cfg)
     db.migrate(conn)
 
@@ -721,6 +809,71 @@ def eval_retrieval(
     if write:
         path = report.write_eval_report(cfg, results, label_set, evidence)
         _ok(f"wrote {path.relative_to(cfg.repo_root)}")
+
+
+@app.command("answer-all")
+def answer_all(
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    only: str = typer.Option(None, "--only", help="Comma-separated question ids."),
+) -> None:
+    """Run the whole single-turn question set and report the contract properties."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    label_set = labels_mod.load(cfg)
+
+    wanted = set(only.split(",")) if only else None
+    items = [i for i in label_set.items if not wanted or i.id in wanted]
+
+    rows = []
+    for item in items:
+        console.print(f"[dim]-> {item.id}[/dim]")
+        try:
+            result = _answer_once(cfg, item.question, provider, item.id,
+                                  show_retrieval=False, quiet=True)
+            invented = result.cited_chunk_ids - {h.chunk_id for h in result.hits}
+            rows.append({
+                "id": item.id, "class": item.cls,
+                "expected": "abstain" if item.must_abstain else "answer",
+                "actual": "abstain" if result.is_refusal else "answer",
+                "schema_ok": True, "invented": len(invented),
+                "n_sent": len(result.sentences),
+                "n_cites": len(result.cited_chunk_ids),
+                "verified": sum(1 for s in result.sentences if s.status == "verified"),
+                "ms": result.latency_ms,
+            })
+        except Exception as exc:
+            rows.append({"id": item.id, "class": item.cls,
+                         "expected": "abstain" if item.must_abstain else "answer",
+                         "actual": f"ERROR {type(exc).__name__}", "schema_ok": False,
+                         "invented": 0, "n_sent": 0, "n_cites": 0, "verified": 0,
+                         "ms": 0})
+            _fail(item.id, f"{type(exc).__name__}: {exc}")
+
+    t = Table(show_edge=False)
+    for c in ("id", "class", "expected", "actual", "sent", "cites", "verified", "ms"):
+        t.add_column(c, justify="right" if c in ("sent", "cites", "verified", "ms") else "left")
+    for r in rows:
+        mark = "" if r["actual"].startswith(r["expected"][:6]) else "  <-- MISMATCH"
+        t.add_row(r["id"], r["class"], r["expected"], r["actual"] + mark,
+                  str(r["n_sent"]), str(r["n_cites"]), str(r["verified"]), str(r["ms"]))
+    console.print()
+    console.print(t)
+
+    n = len(rows)
+    schema_ok = sum(1 for r in rows if r["schema_ok"])
+    no_invented = sum(1 for r in rows if r["invented"] == 0)
+    controls = [r for r in rows if r["expected"] == "abstain"]
+    controls_ok = sum(1 for r in controls if r["actual"] == "abstain")
+    refusals_clean = all(r["n_cites"] == 0 for r in rows if r["actual"] == "abstain")
+
+    console.print()
+    console.print(f"  schema-valid                         {schema_ok}/{n}")
+    console.print(f"  zero invented citation ids           {no_invented}/{n}")
+    console.print(f"  controls that abstained              {controls_ok}/{len(controls)}")
+    console.print(f"  refusals carrying zero citations     {'yes' if refusals_clean else 'NO'}")
+    total_cites = db.scalar(conn, "SELECT COUNT(*) FROM turn_citations") or 0
+    console.print(f"  turn_citations rows in the database  {total_cites}")
 
 
 @app.command("db")

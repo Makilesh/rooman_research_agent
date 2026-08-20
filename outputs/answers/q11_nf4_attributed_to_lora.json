@@ -1,0 +1,73 @@
+{
+  "question": "Which section of the LoRA paper describes its 4-bit NF4 quantisation scheme?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "The NormalFloat (NF) data type builds on Quantile Quantization which is an information-theoretically optimal data type that ensures each quantization bin has an equal number of values assigned from the input tensor.",
+      "cite": [
+        "p_qlora_0002"
+      ],
+      "verify_scores": {
+        "p_qlora_0002": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "4-bit NormalFloat (NF4) quantization and Double Quantization are used in QLORA to reduce memory footprint without degrading performance.",
+      "cite": [
+        "p_qlora_0000"
+      ],
+      "verify_scores": {
+        "p_qlora_0000": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 2,
+      "text": "The 4-bit NormalFloat (NF4) data type is information-theoretically optimal, it still needs to be determined if this property translates to empirical advantages.",
+      "cite": [
+        "p_qlora_0004"
+      ],
+      "verify_scores": {
+        "p_qlora_0004": 1.0
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_qlora_0002",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 3,
+      "page_end": 5,
+      "section": "2 Background",
+      "rerank_score": 0.7885831594467163
+    },
+    {
+      "chunk_id": "p_qlora_0000",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 1,
+      "page_end": 2,
+      "section": null,
+      "rerank_score": 0.5289592146873474
+    },
+    {
+      "chunk_id": "p_qlora_0004",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 6,
+      "page_end": 8,
+      "section": "4 QLoRA vs. Standard Finetuning",
+      "rerank_score": 0.525338351726532
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 8110,
+  "turn_id": "t_eaecac74d273"
+}
