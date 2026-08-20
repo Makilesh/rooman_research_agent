@@ -1,0 +1,344 @@
+─ A_coreference_across_papers — Coreference across papers (LoRA -> QLoRA wit… ─
+
+turn 1: What problem does LoRA solve?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : refuse — top rerank 0.684 < tau_low 0.736: nothing in the corpus 
+is a strong enough match to answer from
+
+**Refused.** top rerank 0.684 < tau_low 0.736: nothing in the corpus is a 
+strong enough match to answer from
+
+
+turn 2: How does the quantised version reduce memory further?
+  raw       : How does the quantised version reduce memory further?
+  condensed : How does the quantised version of LoRA reduce memory?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.853 >= tau_high 0.786
+
+# How does the quantised version of LoRA reduce memory?
+
+Since the memory footprint of LoRA is so minimal, we can use more adapters to 
+improve performance without significantly increasing the total memory used.[^1]
+Aggressively reducing the amount of LoRA parameter yields only minor memory 
+benefits.[^1]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.3-5 — `p_qlora_0002`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 3
+- Top rerank score: 0.8529
+- Sentence verification: verified 2
+
+
+turn 3: What does it report for a 65B model?
+  raw       : What does it report for a 65B model?
+  condensed : What does LoRA report for a 65B model?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.856 >= tau_high 0.786
+
+# What does LoRA report for a 65B model?
+
+QLORA reduces the average memory requirements of finetuning a 65B parameter 
+model from >780GB of GPU memory to <48GB without degrading the runtime or 
+predictive performance compared to a 16bit fully finetuned baseline.[^1] Using 
+QLORA, we train the Guanaco family of models, with the second best model 
+reaching 97.8% of the performance level of ChatGPT on the Vicuna [10] 
+benchmark, while being trainable in less than 12 hours on a single consumer 
+GPU; using a single professional GPU over 24 hours we achieve 99.3% with our 
+largest model, essentially closing the gap to ChatGPT on the Vicuna 
+benchmark.[^1]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 3
+- Top rerank score: 0.8563
+- Sentence verification: verified 2
+
+
+turn 4: Does that cost quality?
+  raw       : Does that cost quality?
+  condensed : What does it report for a 65B model?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.890 >= tau_high 0.786
+
+# What does it report for a 65B model?
+
+QLORA reduces the average memory requirements of finetuning a 65B parameter 
+model from >780GB of GPU memory to <48GB without degrading the runtime or 
+predictive performance compared to a 16bit fully finetuned baseline.[^1] Using 
+QLORA, we train the Guanaco family of models, with the second best model 
+reaching 97.8% of the performance level of ChatGPT on the Vicuna [10] 
+benchmark, while being trainable in less than 12 hours on a single consumer 
+GPU;[^1] When deployed, our smallest Guanaco model (7B parameters) requires 
+just 5 GB of memory and outperforms a 26 GB Alpaca model by more than 20 
+percentage points on the Vicuna benchmark (Table 6).[^1] Based on our automated
+and human evaluations, we find that the top QLORA tuned model, Guanaco 65B, 
+which we finetune on a variant of OASST1, is the best-performing open-source 
+chatbot model and offers performance competitive to ChatGPT.[^2] When compared 
+to GPT-4, Guanaco 65B and 33B have an expected win probability of 30%, based on
+Elo rating from human annotators system-level pairwise comparisons - the 
+highest reported to date.[^2]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+[^2]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.9-10 — `p_qlora_0006`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 3
+- Top rerank score: 0.8895
+- Sentence verification: verified 5
+
+────── B_clarify_then_resolve — Ambiguous question -> clarify -> resolve ──────
+
+turn 1: What rank is used?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : refuse — top rerank 0.188 < tau_low 0.736: nothing in the corpus 
+is a strong enough match to answer from
+
+**Refused.** top rerank 0.188 < tau_low 0.736: nothing in the corpus is a 
+strong enough match to answer from
+
+
+turn 2: In LoRA, for GPT-3.
+  raw       : In LoRA, for GPT-3.
+  condensed : What rank is used in LoRA for GPT-3?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.972 >= tau_high 0.786
+
+# What rank is used in LoRA for GPT-3?
+
+Using GPT-3 175B as an example – deploying independent instances of fine-tuned 
+models, each with 175B parameters, is prohibitively expensive. We propose 
+Low-Rank Adaptation, or LoRA, which freezes the pretrained model weights and 
+injects trainable rank decomposition matrices into each layer of the 
+Transformer architecture, greatly reducing the number of trainable parameters 
+for downstream tasks.[^1] We know that the intrinsic rank needed to represent 
+the "task-specific directions" (thus for model adaptation) is low. In contrast,
+those directions in the rank-4 version of ∆W (corresponding to r = 4) are 
+amplified by a much larger factor 20.[^2] One should expect a very different 
+set of feature directions to be amplified for each different downstream task. 
+In particular, for r = 4, this amplification factor is as large as 20. In other
+words, there are (generally speaking) four feature directions in each layer 
+(out of the entire feature space from the pre-trained model W), that need to be
+amplified by a very large factor 20, in order to achieve our reported accuracy 
+for the downstream specific task.[^2]
+
+## Sources
+
+[^1]: LoRA: Low-Rank Adaptation of Large Language Models · pp.1-3 — 
+`p_lora_0000`
+[^2]: LoRA: Low-Rank Adaptation of Large Language Models · pp.23-26 — 
+`p_lora_0015`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 3
+- Top rerank score: 0.9718
+- Sentence verification: verified 3
+
+
+turn 3: How does that compare to full fine-tuning?
+  raw       : How does that compare to full fine-tuning?
+  condensed : How does LoRA compared to full fine-tuning?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.981 >= tau_high 0.786
+
+# How does LoRA compared to full fine-tuning?
+
+LoRA can reduce the number of trainable parameters by 10,000 times and the GPU 
+memory requirement by 3 times compared to GPT-3 175B fine-tuned with Adam.[^1] 
+LoRA performs on-par or better than fine-tuning in model quality on RoBERTa, 
+DeBERTa, GPT-2, and GPT-3, despite having fewer trainable parameters.[^1]
+
+## Sources
+
+[^1]: LoRA: Low-Rank Adaptation of Large Language Models · pp.1-3 — 
+`p_lora_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5405 ms
+- Passages in context: 2
+- Top rerank score: 0.9815
+- Sentence verification: verified 2
+
+─ C_topic_shift_then_refusal — ReAct vs chain-of-thought, then a question th… ─
+
+turn 1: How does ReAct differ from chain-of-thought prompting?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : answer — top rerank 0.968 >= tau_high 0.786
+
+# How does ReAct differ from chain-of-thought prompting?
+
+However, this 'chain-of-thought' reasoning is a static black box, in that the 
+model uses its own internal representations to generate thoughts and is not 
+grounded in the external world, which limits its ability to reason reactively 
+or update its knowledge.[^1] The problem solving process demonstrated by ReAct 
+is more factual and grounded, whereas CoT is more accurate in formulating 
+reasoning structure but can easily suffer from hallucinated facts or 
+thoughts.[^2]
+
+## Sources
+
+[^1]: ReAct: Synergizing Reasoning and Acting in Language Models · pp.2-3 — 
+`p_react_0002`
+[^2]: ReAct: Synergizing Reasoning and Acting in Language Models · pp.5-6 — 
+`p_react_0004`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 2
+- Top rerank score: 0.9680
+- Sentence verification: verified 2
+
+
+turn 2: What benchmarks does it use for that comparison?
+  raw       : What benchmarks does it use for that comparison?
+  condensed : What benchmarks use ReAct for its comparison?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.963 >= tau_high 0.786
+
+# What benchmarks use ReAct for its comparison?
+
+We conduct empirical evaluations of ReAct and state-of-the-art baselines on 
+four diverse benchmarks: question answering (HotPotQA, Yang et al., 2018), fact
+verification (Fever, Thorne et al., 2018), text-based game (ALFWorld, Shridhar 
+et al., 2020b), and webpage navigation (WebShop, Yao et al., 2022).[^1]
+
+## Sources
+
+[^1]: ReAct: Synergizing Reasoning and Acting in Language Models · pp.2-3 — 
+`p_react_0002`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 2
+- Top rerank score: 0.9631
+- Sentence verification: verified 1
+
+
+turn 3: What learning rate does it use for fine-tuning Llama 3?
+  raw       : What learning rate does it use for fine-tuning Llama 3?
+  condensed : What learning rate does ReAct use for fine-tuning Llama 3?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : refuse — top rerank 0.554 < tau_low 0.736: nothing in the corpus 
+is a strong enough match to answer from
+
+**Refused.** top rerank 0.554 < tau_low 0.736: nothing in the corpus is a 
+strong enough match to answer from
+
+─ D_source_carry_forward — Referring to a previous answer's source by positi… ─
+
+turn 1: How does RAG combine retrieval with generation?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : answer — top rerank 0.989 >= tau_high 0.786
+
+# How does RAG combine retrieval with generation?
+
+We combine these components in a probabilistic model trained end-to-end (Fig. 
+1).[^1] The retriever (Dense Passage Retriever [26], henceforth DPR) provides 
+latent documents conditioned on the input, and the seq2seq model (BART [32]) 
+then conditions on these latent documents together with the input to generate 
+the output.[^1] We marginalize the latent documents with a top-K approximation,
+either on a per-output basis (assuming the same document is responsible for all
+tokens) or a per-token basis (where different documents are responsible for 
+different tokens).[^1]
+
+## Sources
+
+[^1]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.1-2
+— `p_rag_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 2
+- Top rerank score: 0.9891
+- Sentence verification: verified 3
+
+
+turn 2: Expand on the second source.
+  condense  : skipped (ordinal reference did not resolve)
+  route     : clarify — the previous answer cited 1 source(s), so 'the second 
+source' does not exist
+
+[yellow]You asked about the second source, but the previous answer cited 1 
+source. Which one did you mean?[/yellow]
+
+
+turn 3: Which paper was that from?
+  raw       : Which paper was that from?
+  condensed : Which paper is the model in We marginalize the latent documents 
+with a top-K approximation trained end-to-end (Fig. 1) from?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.983 >= tau_high 0.786
+
+# Which paper is the model in We marginalize the latent documents with a top-K 
+approximation trained end-to-end (Fig. 1) from?
+
+Our models leverage two components: (i) a retriever pη(z|x) with parameters η 
+that returns (top-K truncated) distributions over text passages given a query x
+and (ii) a generator pθ(yi|x, z, y1:i−1) parametrized by θ that generates a 
+current token based on a context of the previous i −1 tokens y1:i−1, the 
+original input x and a retrieved passage z.[^1] The models we use are trained 
+end-to-end as shown in Figure 1.[^1]
+
+## Sources
+
+[^1]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.1-2
+— `p_rag_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 0 ms
+- Passages in context: 2
+- Top rerank score: 0.9826
+- Sentence verification: verified 2
+
+
+ scenario          │ turn │ expected │ actual           │ drift │ condensation 
+───────────────────┼──────┼──────────┼──────────────────┼───────┼──────────────
+ A_coreference_ac… │ 1    │ answer   │ refuse  <--      │ -     │ ok           
+                   │      │          │ MISMATCH         │       │              
+ A_coreference_ac… │ 2    │ answer   │ answer           │ -     │ ok           
+ A_coreference_ac… │ 3    │ answer   │ answer           │ -     │ ok           
+ A_coreference_ac… │ 4    │ answer   │ answer           │ -     │ ok           
+ B_clarify_then_r… │ 1    │ clarify  │ refuse  <--      │ -     │ ok           
+                   │      │          │ MISMATCH         │       │              
+ B_clarify_then_r… │ 2    │ answer   │ answer           │ -     │ ok           
+ B_clarify_then_r… │ 3    │ answer   │ answer           │ -     │ ok           
+ C_topic_shift_th… │ 1    │ answer   │ answer           │ -     │ ok           
+ C_topic_shift_th… │ 2    │ answer   │ answer           │ -     │ ok           
+ C_topic_shift_th… │ 3    │ refuse   │ refuse           │ -     │ ok           
+ D_source_carry_f… │ 1    │ answer   │ answer           │ -     │ ok           
+ D_source_carry_f… │ 2    │ answer   │ clarify  <--     │ -     │ ok           
+                   │      │          │ MISMATCH         │       │              
+ D_source_carry_f… │ 3    │ answer   │ answer           │ -     │ ok           
+
+  route accuracy            10/13
+  condensation drift rate   0/13  (target 0)
+  transcripts               outputs/conversations/ (4 files)
