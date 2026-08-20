@@ -1897,3 +1897,165 @@ rather than failing the turn.
 **README line:** "Web search is supplementary, off by default, and goes through the
 same chunk-cite-verify path as the corpus — with the flag off, the control questions
 abstain identically and no network call is made."
+
+---
+
+## D-143 · Two of four real keys were permanently denied — rotation had to learn a third failure class
+**Date:** 2026-08-20
+**Observed on the first real Gemini call:** `403 PERMISSION_DENIED. Your project has
+been denied access.` Probing each key individually: **key_1 and key_2 denied, key_3
+and key_4 working.** `ListModels` succeeded on all four — metadata access and
+generation access are separate permissions, so a key can look healthy and be unable
+to generate.
+**The gap this exposed:** the limiter knew two failure classes, quota-exhausted and
+everything-else. A 403 is neither. Re-raising aborted the turn while two working keys
+sat idle; retrying would have looped forever on a condition no amount of waiting
+fixes.
+**Decision:** a third class. `KeyRejected` marks a key permanently unusable for the
+process, rotation skips it, and the turn continues on the next key. Not persisted —
+a key restored on the provider's side should work again next run without an edit.
+**Consequence:** the full evaluation ran to completion on two keys while two were
+dead, which is exactly what multi-key rotation is supposed to buy and would not have
+worked an hour earlier.
+**Evidence:** `disabled_keys` after the first call: `{key_1: 403..., key_2: 403...}`,
+answer served by key_3. Ledger: key_1 and key_2 show 2 failed attempts each and then
+nothing — tried once, never retried.
+**README line:** "Two of four real keys were denied at the project level; a denied key
+is disabled and rotation continues, because waiting never fixes a 403 and failing the
+turn wastes the keys that work."
+
+---
+
+## D-144 · A transient 5xx must not end a 25-turn evaluation
+**Date:** 2026-08-20
+**Observed:** the first complete Gemini run died on
+`RemoteProtocolError: Server disconnected without sending a response.` Every call
+already spent was wasted.
+**Decision:** transient failures — dropped connections, 5xx, timeouts — rotate to the
+next key or rung instead of aborting. The loop is already bounded, so a genuine
+outage still terminates rather than spinning; and if *every* attempt was transient the
+error says so explicitly rather than reporting quota exhaustion, because nothing was
+actually exhausted.
+**Why the distinction is worth code:** the three classes need three different
+responses. Quota-exhausted → step down a rung. Key-rejected → disable and skip.
+Transient → try again elsewhere. Collapsing any two of them produces either an
+infinite retry or a needless abort.
+**Vindicated immediately:** the completed run logged **14 × 503 UNAVAILABLE ("this
+model is currently experiencing high demand")** and 6 further connection drops. Under
+the previous behaviour any one of them would have ended the run.
+**Evidence:** `test_quota_exhaustion_and_key_rejection_are_different`; the ledger's
+error breakdown.
+**README line:** "Quota exhaustion, a denied key and a dropped connection need three
+different responses — collapsing any two of them causes either an infinite retry or a
+needless abort."
+
+---
+
+## D-145 · Gemini rejects a JSON schema that Ollama accepts
+**Date:** 2026-08-20
+**Found by calling it, not by reading the docs.** `ANSWER_SCHEMA` used
+`"type": ["string", "null"]` for `refusal_reason`. Ollama accepts the union happily.
+Gemini's `response_schema` rejects it before a request is even sent — its type field
+is an enum admitting exactly one value, so the SDK fails Pydantic validation locally.
+**Decision:** `"type": "string"`, with the empty string carrying the "no refusal"
+case. The parser already treated `""` as absent, so nothing downstream changed.
+**Why this matters beyond the one field:** the project claims schema-constrained
+generation on *both* providers. A schema that constrains only one of them is not a
+contract, it is a contract on one path and a hope on the other — and it would have
+gone unnoticed indefinitely, because every Ollama run passed. A test now walks all
+seven schemas and fails on any union type.
+**Evidence:** `test_no_schema_uses_a_union_type`, parameterised over every schema.
+**README line:** "The citation schema had a union type that Ollama accepted and Gemini
+rejects — a constraint that only holds on one provider is not a contract, and only
+running both revealed it."
+
+---
+
+## D-146 · The quota engineering worked: 123 billed calls, zero rate-limit rejections
+**Date:** 2026-08-20
+**The claim under test:** a DB-backed sliding-window limiter enforcing RPM and RPD
+per `(model, key_alias)` should prevent the provider ever having to reject a request
+for rate.
+**Measured across the full Gemini evaluation — 607 calls billed against quota, 302
+served from cache:**
+
+| failure | count |
+|---|---:|
+| 503 UNAVAILABLE (provider-side load) | 14 |
+| schema validation (pre-fix, historical rows) | 12 |
+| 403 denied (the two dead keys) | 9 |
+| connection dropped | 6 |
+| **429 / RESOURCE_EXHAUSTED** | **0** |
+
+**Zero rate-limit rejections.** Every failure was the provider's availability, a dead
+key, or my own schema bug. The limiter never let a request through that the provider
+would have refused for rate.
+
+**The ladder stepped down for real**, which no local run could demonstrate:
+
+| synthesis rung | billed calls |
+|---|---:|
+| gemini-3.7-flash | 42 |
+| gemini-3.6-flash | 9 |
+| gemini-3.5-flash | 1 |
+
+RPD drained on the top rung and the client walked down, exactly as designed — and
+across keys before rungs, so capability degraded last.
+**The cost was higher than I estimated.** I budgeted ~25 synthesis calls; the run
+billed 123 Gemini calls, of which 59 were synthesis. The difference is D-136: the
+sufficiency judge rejects the first retrieval on every question, so each question
+costs a judge and usually a rewrite on top of the synthesis. The estimate was made
+before that behaviour existed and I did not revise it — that is the error, not the
+spend.
+**README line:** "Across 607 billed calls the provider never once rejected a request
+for rate: the durable limiter is the reason, and the synthesis ladder demonstrably
+stepped down three rungs under real quota pressure."
+
+---
+
+## D-147 · Gemini vs Ollama, measured — and where the comparison is contaminated
+**Date:** 2026-08-20
+**Identical corpus, identical thresholds, identical retrieval. Only the generator
+changed.**
+
+| Metric | Ollama `llama3.1:8b` | Gemini | LLM-dep. |
+|---|---:|---:|---|
+| Citation precision | 0.882 | **1.000** | yes |
+| Abstention accuracy | 1.000 (4/4) | **1.000 (4/4)** | yes |
+| Fact coverage (mean) | 0.660 | **0.881** | yes |
+| Route accuracy, single-turn | 0.917 (11/12) | **1.000 (12/12)** | yes |
+| Invented citation ids | 0 | **0** | yes |
+| Refusals carrying citations | 0 | **0** | yes |
+| Condensation drift rate | 0/13 | **0/13** | yes |
+| Papers per multi-hop answer | 1.00 | **1.00** | yes |
+| Route accuracy, conversational | 10/13 | **7/13** | yes |
+| Recall@5 (hybrid + rerank) | 0.646 | 0.646 | **no** |
+
+**The retrieval row is identical by construction, and that is the point of having
+measured it separately.** Everything model-independent is unchanged; only the
+generation columns move.
+
+**What Gemini fixed: `q11`.** The false-premise question failed on every earlier
+attempt. On Gemini: *"The premise of the question is incorrect: the 4-bit NormalFloat
+(NF4) quantisation scheme is not introduced or described by the LoRA paper. Instead,
+NF4 is introduced by the QLoRA paper"* — citing QLoRA, coverage 1.00. That is the
+last single-turn route failure closed, and it took the judge fix, relaxation *and* a
+stronger synthesiser together.
+
+**What Gemini did not fix: multi-hop.** Papers per multi-hop answer is **1.00 on both
+providers**. A stronger model with the cross-document rule in its prompt and passages
+from two papers in its context still answers from one. That rules out "the local model
+is not capable enough" as the explanation and points at context construction — which
+is where D-128 said the next fix belongs.
+
+**Where the comparison is contaminated, stated rather than buried.** Conversational
+route accuracy is *worse* on Gemini (7/13 vs 10/13), and the run logged 14 × 503
+"experiencing high demand" plus 6 dropped connections. Rotation kept the run alive,
+but a turn served after several failed attempts is not the same experiment as a turn
+served first time. **I do not claim Gemini is worse conversationally** — the run
+happened during a provider-load window and the single-turn half of the same run
+improved on every metric. Re-running it in a quieter window is the honest next step
+and has not been done.
+**README line:** "Gemini improves every generation metric on single-turn questions and
+closes the last route failure; the conversational half of the same run was measured
+during a provider-load window and is not a clean comparison."

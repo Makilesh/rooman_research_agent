@@ -271,6 +271,52 @@ Every gold label was chosen by reading the *extracted chunk text*, never from re
 | Papers cited per multi-hop answer | 1.00 | yes |
 | p50 / p95 latency | 14.6 s / 18.6 s | yes |
 
+### Provider comparison — Ollama vs Gemini
+
+Identical corpus, thresholds and retrieval; only the generator changed.
+
+| Metric | Ollama `llama3.1:8b` | Gemini | LLM-dep. |
+|---|---:|---:|---|
+| Citation precision | 0.882 | **1.000** | yes |
+| Abstention accuracy | 1.000 (4/4) | **1.000 (4/4)** | yes |
+| Fact coverage (mean) | 0.660 | **0.881** | yes |
+| Route accuracy, single-turn | 0.917 | **1.000 (12/12)** | yes |
+| Invented citation ids | 0 | **0** | yes |
+| Condensation drift rate | 0/13 | **0/13** | yes |
+| Papers per multi-hop answer | 1.00 | 1.00 | yes |
+| Route accuracy, conversational | **10/13** | 7/13 | yes |
+| Recall@5 (hybrid + rerank) | 0.646 | 0.646 | **no** |
+
+The retrieval row is identical **by construction** — that is exactly why it is measured
+separately. Only generation columns move with the model.
+
+Gemini closes the last single-turn route failure, the false-premise question: *"The
+premise of the question is incorrect: NF4 is not introduced by the LoRA paper. Instead
+it is introduced by the QLoRA paper"* — citing QLoRA.
+
+Gemini does **not** fix multi-hop: 1.00 papers per answer on both. A stronger model,
+given the cross-document rule and passages from two papers, still answers from one.
+That rules out model capability as the explanation.
+
+**The conversational row is not a clean comparison and I am not claiming Gemini is
+worse there.** That run logged 14 × `503 UNAVAILABLE` and 6 dropped connections;
+rotation kept it alive, but a turn served after several failed attempts is a different
+experiment. Re-running in a quieter window is the honest next step and has not been done.
+
+### Quota engineering, verified against the real API
+
+**607 calls billed, zero 429 rate-limit rejections.** Every failure was provider
+availability, a dead key, or a schema bug of mine — the limiter never let through a
+request the provider would have refused for rate.
+
+The synthesis ladder **stepped down three rungs** under real quota pressure:
+`gemini-3.7-flash` (42 calls) → `gemini-3.6-flash` (9) → `gemini-3.5-flash` (1), draining
+keys before rungs so capability degrades last.
+
+Two of the four supplied keys returned `403 PERMISSION_DENIED` at the project level.
+The run completed anyway: a denied key is disabled and rotation continues, because
+waiting never fixes a 403 while working keys sit idle.
+
 **Reproducible.** Generation runs greedily with a fixed seed and one discarded warm-up call — measured on this machine, the *first* call after a model load returns different text from every subsequent identical call, which then agree 6/6. Two full runs with the cache cleared produce **identical reports apart from wall-clock latency.**
 
 The strongest results are the structural ones: zero invented ids and zero refusals-with-citations hold because `answer.py` enforces them.
