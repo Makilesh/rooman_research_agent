@@ -16,7 +16,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from . import agent
 from . import answer as answer_mod
+from . import conversation
+from . import router as router_mod
 from . import corpus, db, evaluate, report
 from . import verify as verify_mod
 from . import ingest as ingest_mod
@@ -874,6 +877,235 @@ def answer_all(
     console.print(f"  refusals carrying zero citations     {'yes' if refusals_clean else 'NO'}")
     total_cites = db.scalar(conn, "SELECT COUNT(*) FROM turn_citations") or 0
     console.print(f"  turn_citations rows in the database  {total_cites}")
+
+
+def _render_turn(result, cfg: Config, show_trace: bool = True) -> None:
+    """Print one turn: what the condenser did, how it routed, and the answer."""
+    c = result.condensed
+    if show_trace:
+        if c.used_llm or c.fell_back:
+            flag = "[red]DRIFT[/red]" if c.drifted else "ok"
+            console.print(f"[dim]  raw       :[/dim] {result.raw_text}")
+            console.print(f"[dim]  condensed :[/dim] {c.query}")
+            console.print(f"[dim]  drift     :[/dim] {flag} — {c.reason}")
+        else:
+            console.print(f"[dim]  condense  : skipped ({c.reason})[/dim]")
+        if result.resolved_refs:
+            console.print(f"[dim]  resolved  :[/dim] {', '.join(result.resolved_refs)}")
+        console.print(f"[dim]  route     :[/dim] {result.decision} — {result.route.reason}")
+
+    if result.cache_hit:
+        console.print("\n[green]Served from the semantic answer cache.[/green]\n")
+        return
+    if result.clarification:
+        console.print(f"\n[yellow]{result.clarification}[/yellow]\n", markup=False)
+        return
+    if result.answer is None:
+        console.print(f"\n**Refused.** {result.route.reason}\n", markup=False)
+        return
+    console.print()
+    console.print(report.render_answer_markdown(result.answer), markup=False,
+                  highlight=False)
+
+
+@app.command()
+def chat(
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    session: str = typer.Option(None, "--session", help="Resume an existing session."),
+) -> None:
+    """Multi-turn REPL. /history /sources /new /quit"""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    fingerprint = index_mod.load_fingerprint(conn)
+    session_id = session or conversation.new_session(conn, fingerprint)
+    warning = conversation.fingerprint_warning(conn, session_id, fingerprint)
+    if warning:
+        _warn("corpus changed since this session started", warning)
+
+    models = _load_models(cfg)
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    console.print(f"Session [bold]{session_id}[/bold] · corpus {fingerprint}")
+    console.print("[dim]/history  /sources  /new  /quit[/dim]\n")
+
+    while True:
+        try:
+            raw = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return
+        if not raw:
+            continue
+        if raw in {"/quit", "/exit"}:
+            return
+        if raw == "/new":
+            session_id = conversation.new_session(conn, fingerprint)
+            console.print(f"[dim]new session {session_id}[/dim]\n")
+            continue
+        if raw == "/history":
+            for t in conversation.load_turns(conn, session_id):
+                who = "you" if t.role == "user" else "agent"
+                body = t.raw_text if t.role == "user" else (t.answer_text or t.raw_text)
+                console.print(f"  {t.ord:>2}. [{who}] {body[:110]}")
+            console.print()
+            continue
+        if raw == "/sources":
+            rows = db.all_rows(conn, """
+                SELECT DISTINCT tc.chunk_id, d.title, c.page_start
+                FROM turn_citations tc
+                JOIN turns t ON t.turn_id = tc.turn_id
+                JOIN chunks c ON c.chunk_id = tc.chunk_id
+                JOIN documents d ON d.doc_id = c.doc_id
+                WHERE t.session_id = ? ORDER BY tc.chunk_id
+            """, (session_id,))
+            for r in rows:
+                console.print(f"  {r['chunk_id']}  {r['title']} · p.{r['page_start']}")
+            console.print()
+            continue
+
+        try:
+            result = agent.run_turn(cfg, conn, client, models, session_id, raw,
+                                    provider=provider)
+            _render_turn(result, cfg)
+        except Exception as exc:
+            _fail(f"{type(exc).__name__}", str(exc))
+
+
+@app.command()
+def history(
+    session: str = typer.Option(..., "--session", help="Session id."),
+) -> None:
+    """Full stored history for a session, including citations."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    for t in conversation.load_turns(conn, session):
+        who = "user" if t.role == "user" else "agent"
+        console.print(f"[bold]{t.ord:>2}. {who}[/bold] "
+                      f"{'(' + t.route + ')' if t.route else ''}")
+        console.print(f"    {t.raw_text}")
+        if t.condensed_query and t.condensed_query != t.raw_text:
+            console.print(f"    [dim]condensed: {t.condensed_query}[/dim]")
+        if t.answer_text:
+            console.print(f"    {t.answer_text[:200]}")
+
+
+@app.command("chat-eval")
+def chat_eval(
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    only: str = typer.Option(None, "--only", help="Comma-separated scenario ids."),
+) -> None:
+    """Run every conversation scenario and report route + drift behaviour."""
+    import yaml
+
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    fingerprint = index_mod.load_fingerprint(conn)
+    models = _load_models(cfg)
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+
+    # The semantic answer cache accumulates across runs and short-circuits turns,
+    # which makes two eval runs incomparable. Evaluation starts from an empty one so
+    # the numbers describe the pipeline rather than the cache's history.
+    conn.execute("DELETE FROM answer_cache")
+    conn.commit()
+
+    spec = yaml.safe_load(cfg.conversations_path.read_text(encoding="utf-8"))
+    wanted = set(only.split(",")) if only else None
+    rows: list[dict] = []
+    transcripts: dict[str, list[str]] = {}
+
+    for scenario in spec["scenarios"]:
+        if wanted and scenario["id"] not in wanted:
+            continue
+        console.rule(f"[bold cyan]{scenario['id']} — {scenario['title']}")
+        session_id = conversation.new_session(conn, fingerprint)
+        lines = [f"# {scenario['id']} — {scenario['title']}", "",
+                 f"Session `{session_id}` · corpus `{fingerprint}`", ""]
+
+        for i, turn in enumerate(scenario["turns"], start=1):
+            raw = turn["raw_text"]
+            console.print(f"\n[bold]turn {i}:[/bold] {raw}")
+            result = agent.run_turn(
+                cfg, conn, client, models, session_id, raw, provider=provider,
+                is_clarification_reply=bool(turn.get("is_clarification_reply")),
+            )
+            _render_turn(result, cfg)
+
+            expected = turn.get("expected_route")
+            actual = result.decision
+            contains = turn.get("expected_condensation_contains") or []
+            forbidden = turn.get("must_not_contain") or []
+            cq = result.condensed.query
+            missing = [w for w in contains if w.lower() not in cq.lower()]
+            leaked = [w for w in forbidden if w.lower() in cq.lower()]
+
+            rows.append({
+                "scenario": scenario["id"], "turn": i,
+                "expected": expected, "actual": actual,
+                "match": expected == actual,
+                "drifted": result.condensed.drifted,
+                "novel": sorted(result.condensed.novel_words),
+                "missing": missing, "leaked": leaked,
+                "refs": result.resolved_refs,
+            })
+
+            lines += [f"## Turn {i}", "", f"**User:** {raw}", ""]
+            if result.condensed.used_llm:
+                lines += [f"*Condensed to:* `{cq}`",
+                          f"*Drift guard:* {'FELL BACK' if result.condensed.drifted else 'passed'}"
+                          f" — {result.condensed.reason}", ""]
+            else:
+                lines += [f"*Condensation:* skipped — {result.condensed.reason}", ""]
+            if result.resolved_refs:
+                lines += [f"*Resolved source references:* `{', '.join(result.resolved_refs)}`", ""]
+            lines += [f"*Route:* `{actual}` (expected `{expected}`) — {result.route.reason}", ""]
+            if result.clarification:
+                lines += [f"**Agent asks:** {result.clarification}", ""]
+            elif result.answer is not None:
+                lines += [report.render_answer_markdown(result.answer), ""]
+            else:
+                lines += [f"**Agent refuses.** {result.route.reason}", ""]
+
+        transcripts[scenario["id"]] = lines
+
+    out_dir = cfg.outputs_dir / "conversations"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for sid, lines in transcripts.items():
+        (out_dir / f"{sid}.md").write_text("\n".join(lines), encoding="utf-8")
+
+    t = Table(show_edge=False)
+    for c in ("scenario", "turn", "expected", "actual", "drift", "condensation"):
+        t.add_column(c)
+    for r in rows:
+        note = ""
+        if r["missing"]:
+            note += f"missing {r['missing']} "
+        if r["leaked"]:
+            note += f"[red]LEAKED {r['leaked']}[/red]"
+        t.add_row(r["scenario"][:22], str(r["turn"]), str(r["expected"]),
+                  r["actual"] + ("" if r["match"] else "  <-- MISMATCH"),
+                  "[red]DRIFT[/red]" if r["drifted"] else "-", note or "ok")
+    console.print()
+    console.print(t)
+
+    n = len(rows)
+    correct = sum(1 for r in rows if r["match"])
+    drifted = sum(1 for r in rows if r["drifted"])
+    console.print()
+    console.print(f"  route accuracy            {correct}/{n}")
+    console.print(f"  condensation drift rate   {drifted}/{n}"
+                  f"  (target 0)")
+    console.print(f"  transcripts               outputs/conversations/ "
+                  f"({len(transcripts)} files)")
 
 
 @app.command("db")

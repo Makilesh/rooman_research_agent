@@ -1,0 +1,135 @@
+# Multi-turn evaluation scenarios — 4 conversations, 13 turns.
+#
+# Scenario C was rebuilt on 2026-08-20 when DPO and Self-RAG left the corpus. The
+# original was "How does DPO differ from RLHF?" -> "What reward model does it need?"
+# -> "What learning rate for Llama-3?". It is rebuilt on ReAct vs chain-of-thought,
+# which preserves every property that mattered: a genuine cross-paper contrast, a
+# follow-up that depends on the first turn, and a final turn that must abstain
+# MID-CONVERSATION — harder than abstaining cold, because the preceding turns have
+# established that the agent knows this paper and is willing to answer about it.
+#
+# expected_condensation_contains / must_not_contain are checked literally against the
+# condensed query. `must_not_contain` is the drift guard's test: those are words a
+# condenser is tempted to invent because they sound more precise than what the
+# conversation actually said.
+
+version: 1
+corpus_fingerprint_at_labelling: "e62c6925a03ad297"
+
+scenarios:
+
+  # ── A · coreference across papers ──────────────────────────────────────
+  # The whole point: turn 2 says "the quantised version" and never says QLoRA.
+  # Resolving that requires the conversation, not the question.
+  - id: A_coreference_across_papers
+    title: "Coreference across papers (LoRA -> QLoRA without naming it)"
+    turns:
+      - raw_text: "What problem does LoRA solve?"
+        expected_route: answer
+        gold_chunks: [c_lora_0006, c_lora_0008]
+        expected_facts: ["low-rank", "trainable parameters", "frozen"]
+        note: "Turn 1 — condensation is skipped entirely; there is no history."
+
+      - raw_text: "How does the quantised version reduce memory further?"
+        expected_route: answer
+        expected_condensation_contains: ["LoRA"]
+        must_not_contain: ["QLoRA-specific", "framework", "pipeline"]
+        gold_chunks: [c_qlora_0005, c_qlora_0002]
+        expected_facts: ["4-bit", "NormalFloat", "Double Quantization"]
+        note: >
+          THE SCENARIO-A GATE. The user never says QLoRA. Resolution must come from
+          the conversation plus retrieval, not from the model's own knowledge.
+
+      - raw_text: "What does it report for a 65B model?"
+        expected_route: answer
+        expected_condensation_contains: ["65B"]
+        gold_chunks: [c_qlora_0000, c_qlora_0002]
+        expected_facts: ["65B", "48GB", "single"]
+
+      - raw_text: "Does that cost quality?"
+        expected_route: answer
+        gold_chunks: [c_qlora_0000, c_qlora_0010]
+        expected_facts: ["16-bit", "performance", "preserving"]
+
+  # ── B · clarification, then resolution ─────────────────────────────────
+  # "What rank is used?" is not unanswerable — it is underspecified. LoRA and QLoRA
+  # both use ranks, and several ranks appear per paper. Guessing one is worse than
+  # asking which.
+  - id: B_clarify_then_resolve
+    title: "Ambiguous question -> clarify -> resolve"
+    turns:
+      - raw_text: "What rank is used?"
+        expected_route: clarify
+        gold_chunks: []
+        expected_facts: []
+        note: >
+          THE SCENARIO-B GATE. Must route to clarify, and the clarifying question
+          must name the actual competing alternatives rather than asking the user to
+          "be more specific".
+
+      - raw_text: "In LoRA, for GPT-3."
+        expected_route: answer
+        is_clarification_reply: true
+        expected_condensation_contains: ["rank", "LoRA"]
+        gold_chunks: [c_lora_0020, c_lora_0008]
+        expected_facts: ["r = 4", "r = 8", "18M"]
+
+      - raw_text: "How does that compare to full fine-tuning?"
+        expected_route: answer
+        expected_condensation_contains: ["LoRA"]
+        must_not_contain: ["benchmark suite", "methodology"]
+        gold_chunks: [c_lora_0006, c_lora_0020]
+        expected_facts: ["trainable parameters", "fine-tuning"]
+
+  # ── C · topic shift, then an honest mid-conversation refusal ───────────
+  # Rebuilt without DPO. The final turn is the hard one: three turns have established
+  # that the agent knows the ReAct paper and answers about it, which is exactly the
+  # context in which a model is most likely to keep going and invent a figure.
+  - id: C_topic_shift_then_refusal
+    title: "ReAct vs chain-of-thought, then a question the paper cannot answer"
+    turns:
+      - raw_text: "How does ReAct differ from chain-of-thought prompting?"
+        expected_route: answer
+        gold_chunks: [c_react_0002, c_react_0001]
+        expected_facts: ["reasoning", "acting", "actions"]
+
+      - raw_text: "What benchmarks does it use for that comparison?"
+        expected_route: answer
+        expected_condensation_contains: ["ReAct"]
+        must_not_contain: ["evaluation harness", "leaderboard"]
+        gold_chunks: [c_react_0004, c_react_0002]
+        expected_facts: ["HotpotQA", "Fever"]
+
+      - raw_text: "What learning rate does it use for fine-tuning Llama 3?"
+        expected_route: refuse
+        must_abstain: true
+        gold_chunks: []
+        expected_facts: []
+        note: >
+          THE SCENARIO-C GATE. ReAct (October 2022) predates Llama 3 entirely, and
+          its fine-tuning experiments use PaLM. The paper IS in the corpus and IS
+          about fine-tuning, so retrieval will surface confident-looking near-misses.
+          Abstaining here is harder than abstaining cold.
+
+  # ── D · source reference carry-forward ─────────────────────────────────
+  # The direct demonstration that structured citations beat inline markers.
+  - id: D_source_carry_forward
+    title: "Referring to a previous answer's source by position"
+    turns:
+      - raw_text: "How does RAG combine retrieval with generation?"
+        expected_route: answer
+        gold_chunks: [c_rag_0005, c_rag_0002]
+        expected_facts: ["retriever", "generator", "MIPS"]
+
+      - raw_text: "Expand on the second source."
+        expected_route: answer
+        resolves_ordinal: 2
+        note: >
+          THE SCENARIO-D GATE. "The second source" is resolved by querying
+          turn_citations for the second footnote of the previous answer. Inline prose
+          markers cannot support this: there is nothing to query. The SQL that does
+          it is printed in the transcript.
+
+      - raw_text: "Which paper was that from?"
+        expected_route: answer
+        note: "Resolved from the same citation rows, not from the model's memory."

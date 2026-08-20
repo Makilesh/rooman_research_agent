@@ -1126,3 +1126,203 @@ better.
 **README line:** "Encoders and an 8B local model coexist on 12 GB, but only with
 `keep_alive` set — otherwise the scheduler evicts and reloads the model between
 calls and a 1.5s request takes 71s."
+
+---
+
+## D-021 · The condensation vocabulary constraint, and the guard that enforces it
+**Date:** 2026-08-20
+**Context:** In my Opkey build, the follow-up *"what statuses can it have during
+approval?"* was condensed into a query containing **"workflow"** — a word nobody had
+used. Retrieval went to the wrong chapters. Nothing errored; the answer was fluent
+and wrong.
+**Decision:** two layers. The prompt forbids introducing any content word absent from
+the history or the raw follow-up. Then, programmatically, content words in the
+condensed query are stemmed and diffed against `history ∪ raw ∪ referenced-source
+vocabulary`; any novel word discards the condensation and uses the raw query.
+**Why the second layer is the real one:** a prompt instruction is a request. A diff is
+an enforcement, and only the diff is testable. `test_the_drift_guard_catches_an_
+injected_novel_content_word` reproduces the exact Opkey failure and asserts the raw
+query wins.
+**Consequence:** slightly stilted rewrites, and a fallback that is sometimes a worse
+query than the model produced. Retrieving on an under-specified query beats retrieving
+on a hallucinated term.
+**Evidence:** **condensation drift rate 0/13 across all four scenarios.** Target met.
+**README line:** "The condenser may only reuse words already in the conversation, and
+that constraint is enforced by a stemmed diff rather than trusted to the prompt."
+
+---
+
+## D-123 · The drift guard's stemmer had a false positive
+**Date:** 2026-08-20
+**Context:** Scenario B turn 3 reported drift on the content word `compar`, for a
+condensation that was word-for-word identical to the user's own question.
+**Cause:** the stemmer stripped `-ed` from "compared" to give `compar`, but "compare"
+matched no suffix and stayed `compare`. The two never compared equal, so reusing a
+word already in the conversation registered as novel.
+**Decision:** strip a trailing `e` unconditionally after suffix removal, so
+`compare`/`compared`/`compares` all reduce to `compar`.
+**Why this mattered more than it looks:** a false positive in the drift guard is not
+cosmetic. It discards a good condensation and retrieves on the raw pronoun-laden
+follow-up instead — degrading exactly the turn the condenser existed to fix, while
+reporting a drift rate that overstates the problem.
+**Consequence:** drift rate went from 1/13 to **0/13** with no change to the guard's
+strictness. The stemmer is still crude, deliberately: its only job is inflection
+matching, and a real stemmer is another dependency for that.
+**Evidence:** `test_stemmer_is_consistent_across_inflections`, parameterised over the
+inflection pairs this corpus actually produces.
+**README line:** "An inconsistent stemmer made the drift guard fire on legitimate
+rephrasing — the guard is only as good as the normalisation underneath it."
+
+---
+
+## D-025 · Three-way routing, and how badly the thresholds were derived
+**Date:** 2026-08-20
+**Decision:** route on the **top** rerank score: `>= tau_high` answer, `< tau_low`
+refuse, between them ask. Never on an average — averaging across the slate makes
+retrieving *more* results look *worse*, because the tail of any slate is noise.
+
+**This threshold was derived wrong twice, and both times end-to-end measurement
+caught it.** The sequence is worth recording, because it is the whole argument for
+validating a rule against behaviour rather than against its own histogram.
+
+| attempt | rule | tau_low | tau_high | route accuracy |
+|---|---|---:|---:|---:|
+| 1 | band around the sweep's balanced-accuracy peak (peak−0.05, peak+0.15) | 0.80 | 0.99 | **2/13** |
+| 2 | the overlap region: min(positives) to max(negatives) | 0.674 | 0.839 | 6/13 |
+| 3 | percentiles: p05 of positives, p95 of negatives | **0.736** | **0.786** | **10/13** |
+
+Attempt 1's `+0.15` was arbitrary and produced `tau_high = 0.99`, pushing roughly half
+of genuinely answerable questions into the clarify band. Attempt 2 was principled in
+shape but keyed the band on **one observation from each population** — with n=11 and
+n=4, those single points move enormously on resampling, and the resulting band was so
+wide it swallowed most real questions. Attempt 3 uses percentiles, which tolerate one
+unusual question on either side.
+**The honest caveat, and it is a large one:** the negative population is **four
+questions**. That is not enough to estimate a p95, and `tau_high` is therefore the
+least well-evidenced number in the system. The derivation says so in its own output.
+**Evidence:** the table above; `outputs/eval_report.md` for the distributions.
+**Revisit if:** more control questions are written. This is the single highest-value
+addition to the evaluation, ahead of everything else on the list.
+**README line:** "The routing thresholds were derived wrong twice before end-to-end
+measurement caught it — a threshold rule has to be validated against routing
+behaviour, not against its own histogram."
+
+---
+
+## D-124 · Threshold calibration must include conversational turns
+**Date:** 2026-08-20
+**Context:** Thresholds calibrated only on the 12 well-formed single-turn questions
+refused *"What problem does LoRA solve?"*, which scores 0.684 — below the 0.789
+minimum of that population.
+**Cause:** evaluation questions are longer and more specific than what a person types
+mid-conversation. A threshold fitted to them is fitted to the wrong distribution.
+**Decision:** add the first turn of each conversation scenario to the calibration
+population. Turn 1 only, deliberately: later turns depend on condensation, and
+folding condenser behaviour into a retrieval threshold would make the number depend
+on which model happened to serve the rewrite. `clarify` expectations are excluded
+from both populations — by definition neither clearly answerable nor clearly not, so
+they cannot inform a boundary without begging the question.
+**Consequence:** the answerable population grew from 8 to 11 and its minimum dropped
+from 0.789 to 0.684 — a large shift from three questions, which is itself evidence of
+how under-sampled this is.
+**README line:** "Routing thresholds are calibrated on conversational turns as well as
+evaluation questions, because a question typed mid-conversation scores measurably
+lower than a well-formed one."
+
+---
+
+## D-026 · Clarifying questions are built from the competing candidates
+**Date:** 2026-08-20
+**Decision:** generate the clarifying question from the retrieved candidates that
+cleared `tau_low`, one per document, and fall back to a deterministic "Which did you
+mean: X, or Y?" if the model call fails.
+**Why one per document:** three chunks from the same paper describe one option three
+times, which is not a choice.
+**Why not "could you clarify?":** a generic prompt spends the user's turn and returns
+no information. The retrieved candidates already say what the ambiguity *is*.
+**Consequence:** a clarification costs one volume-ladder call, never a synthesis one.
+**Evidence:** `test_clarification_names_one_option_per_document`.
+**README line:** "A clarifying question names the actual competing sources, because
+the retrieval results already say what the ambiguity is."
+
+---
+
+## D-027 · The document-diversity guard
+**Date:** 2026-08-20
+**Context:** Step 7 measured all three multi-hop questions answering from a single
+paper, and in two of them the second paper never reached the context slate at all.
+**Decision:** if the top-N slate is monopolised by one document, the weakest slot is
+given to the best passage from another document, provided it clears `tau_low`.
+**Why:** reranking is per-passage and paper-blind, so one paper's chunks can take
+every slot even when another clears the floor comfortably. That is an artefact of
+ranking, not a fact about the corpus.
+**What it cannot do:** manufacture evidence. If only one paper is relevant, nothing
+changes — asserted by `test_diversity_guard_does_not_invent_diversity`.
+**Consequence:** the sixth-best passage is sometimes displaced by a weaker one from
+another paper. That is the intended trade for multi-hop questions and a small loss
+for single-hop ones.
+**Evidence:** `test_diversity_guard_admits_a_second_paper`. Whether it actually fixes
+multi-hop citation spread is re-measured at Step 12 — it is not claimed here.
+**README line:** "Reranking is paper-blind, so one document can monopolise the context
+slate; the diversity guard reserves a slot for a second paper that has earned one."
+
+---
+
+## D-125 · Evaluation clears the semantic cache before running
+**Date:** 2026-08-20
+**Context:** Two consecutive scenario runs with no code change between them produced
+different route decisions.
+**Cause:** the semantic answer cache persists across runs. Once populated, it
+short-circuits turns, so a later run measures the cache's history rather than the
+pipeline.
+**Decision:** `chat-eval` truncates `answer_cache` before it starts.
+**Why this matters beyond tidiness:** it briefly made a threshold change look like it
+had *worsened* route accuracy, which nearly sent me tuning in the wrong direction. An
+evaluation that is not reproducible is not evidence.
+**Consequence:** the measured semantic cache hit rate during evaluation is 0 by
+construction. That is honest — the cache's value is in interactive use, and D-005
+already predicted a near-zero hit rate on this workload.
+**README line:** "Evaluation starts from an empty semantic cache, because a cache that
+persists between runs measures its own history rather than the pipeline."
+
+---
+
+## D-126 · Scenario outcomes, stated as measured rather than as designed
+**Date:** 2026-08-20
+**Measured:** route accuracy **10/13**, condensation drift rate **0/13**.
+
+| gate | outcome |
+|---|---|
+| A — "the quantised version" resolves without the user naming QLoRA | **partial** |
+| B — turn 1 clarifies, turn 2 resolves | **failed on turn 1** |
+| C — abstains mid-conversation | **passed** |
+| D — ordinal source reference resolves | **passed in mechanism, not in demo** |
+
+**A (partial).** The condenser did resolve the pronoun correctly, producing *"How does
+the quantised version of LoRA reduce memory?"* with no drift, and turns 2-4 all
+answered. But retrieval then returned LoRA's own memory discussion rather than
+QLoRA's NF4 and Double Quantization. The *coreference* worked; the *cross-paper hop*
+did not. Same root cause as D-121.
+
+**B (failed).** *"What rank is used?"* scored 0.188 and was refused, not clarified.
+The finding underneath it is more interesting than the failure: **a vague query and an
+unanswerable query are indistinguishable to a relevance score.** Both retrieve nothing
+that scores well. Detecting ambiguity needs a different signal — for instance several
+candidates that are mutually inconsistent yet individually plausible — and a top-score
+threshold cannot express that.
+
+**C (passed).** All three turns correct, including the mid-conversation abstention on
+Llama 3 after two turns of answering confidently about ReAct.
+
+**D (passed in mechanism).** Turn 2 correctly detected that the previous answer cited
+only **one** source and asked which was meant, rather than retrieving on the
+contentless phrase "the second source" — which had previously produced a bewildering
+refusal at score 0.057. The resolution machinery is verified by tests against
+`turn_citations`. The intended demonstration did not run because turn 1's answer cited
+one source, not two.
+**Decision:** report all four as measured. The expectations were written before the
+system existed and three of them encode assumptions that turned out to be wrong; the
+honest move is to say which, not to adjust the expectations until they pass.
+**README line:** "Route accuracy is 10/13 and drift is 0/13; of the four conversation
+gates one passed cleanly, one passed in mechanism, one partially, and one failed —
+reported per scenario rather than as a single number."
