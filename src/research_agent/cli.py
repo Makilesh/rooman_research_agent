@@ -518,8 +518,8 @@ def _answer_once(cfg: Config, question: str, provider: str | None,
             console.print(report.render_answer_markdown(result.answer),
                           markup=False, highlight=False)
 
-    if save and result.answer is not None:
-        md, js = report.write_answer(cfg, result.answer, save)
+    if save:
+        md, js = report.write_turn(cfg, result, save)
         if not quiet:
             _ok(f'wrote {md.relative_to(cfg.repo_root)} and {js.name}')
     return result
@@ -538,9 +538,17 @@ def ask(
         False, "--show-retrieval", help="Also print the retrieval tables."
     ),
     trace: bool = typer.Option(False, "--trace", help="Print the agent loop trace."),
+    web: bool = typer.Option(
+        False, "--web",
+        help="Also search the web. Supplementary to the corpus, never a replacement."),
 ) -> None:
     """Ask a question and get a cited answer, or an explicit refusal."""
     cfg = Config.load()
+    if web:
+        cfg = replace(cfg, web_enabled=True)
+        _warn("web search enabled",
+              "results are supplementary; citations mark them [web] and the "
+              "headline evaluation numbers remain corpus-only")
     if not retrieve_only:
         _answer_once(cfg, question, provider, save, show_retrieval, trace=trace)
         return
@@ -1279,6 +1287,30 @@ def eval_cmd(
     console.print(f"  LLM calls / cache hit rate           "
                   f"{ledger['total']} / {ledger['cache_hit_rate']:.1%}")
     _ok(f"wrote {path.relative_to(cfg.repo_root)}")
+
+
+@app.command()
+def ui(
+    port: int = typer.Option(8501, "--port", help="Port to serve on."),
+) -> None:
+    """Launch the Streamlit chat UI (optional; needs requirements-ui.txt)."""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        _fail("Streamlit is not installed",
+              "it is an optional extension: pip install -r requirements-ui.txt")
+        raise typer.Exit(1)
+
+    target = _Path(__file__).with_name("ui.py")
+    console.print(f"Serving the chat UI on http://localhost:{port}")
+    # Streamlit must own the process; it re-runs the script on every interaction.
+    subprocess.run([_sys.executable, "-m", "streamlit", "run", str(target),
+                    "--server.port", str(port),
+                    "--server.headless", "true"], check=False)
 
 
 @app.command("db")

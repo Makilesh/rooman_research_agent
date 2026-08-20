@@ -1749,3 +1749,151 @@ did not reproduce. `q11` remains the single route failure, diagnosed at Step 6 a
 retrieval problem (0.00 Recall@5 on every configuration) rather than a synthesis one.
 **README line:** "Every generation number is reproducible: two runs with the cache
 cleared produce identical reports."
+
+---
+
+## D-138 · What is committed, and what is not
+**Date:** 2026-08-20
+**Decision:** `outputs/` is committed in full — 12 answers as `.md` + `.json`, 4
+conversation transcripts, `eval_report.md`. Everything rebuildable is ignored:
+`storage/`, `*.npy`, `.cache/`, `data/sources/*.pdf`, `.venv/`.
+**Why commit outputs:** if a reviewer cannot run Ollama, or skips setup entirely, the
+results are still on the page and still scoreable. That is worth more than the ~90 KB
+it costs.
+
+**A problem found while auditing this, and it was not a size problem.** The corpus
+PDFs are deliberately not committed (D-006) so the repository does not redistribute
+anyone's paper. The answer JSONs then embedded **20,679 characters of verbatim paper
+text each** — 8,000 of it from passages that were never even cited — because
+`answer_to_dict` was serving two callers with one shape: the semantic cache, which
+genuinely needs full passage text to reconstruct an answer, and the committed
+artifact, which does not. That quietly reintroduced exactly what D-006 avoids.
+**Fix:** the committed JSON carries only **cited** passages, each truncated to a
+600-character excerpt — enough to check a citation by eye, far short of republishing
+the passage. The cache keeps full text, in the database, which is gitignored.
+`outputs/answers/` went from 311 KB to 63 KB.
+
+**Two further gitignore findings:** a stray `*m/` pattern would have ignored any
+directory whose name ends in "m", and the private working notes were listed only by
+directory. Both fixed; the private files are now listed by name as well, so they stay
+ignored if they are ever moved back to the root.
+**README line:** "Results are committed so they are readable without running
+anything, but the answer files carry only cited excerpts — committing full passage
+text would re-introduce the redistribution question that not committing the PDFs
+avoids."
+
+---
+
+## D-139 · Refusals are deliverables too
+**Date:** 2026-08-20
+**Context:** Four of the twelve `outputs/answers/` files were missing.
+**Cause:** a refusal decided by the router never produces an `Answer` object, and the
+writer was guarded on `if result.answer is not None`. So nothing was written for
+exactly the four questions that demonstrate abstention — the capability the brief
+singles out and that most submissions skip.
+**Decision:** `report.write_turn` writes an artifact for every outcome: answer,
+refusal, or clarification, each with its route, top rerank score and loop count.
+**Why it matters beyond completeness:** an honest refusal is a *result*, not the
+absence of one. A reviewer looking for evidence of abstention should find it as a
+file, not have to infer it from a gap in the directory listing.
+**Evidence:** `outputs/answers/` now holds 12 `.md` + 12 `.json`.
+**README line:** "Refusals are written out like any other answer, because an honest
+refusal is a result rather than the absence of one."
+
+---
+
+## D-140 · The clean-clone test, and the two README numbers it falsified
+**Date:** 2026-08-20
+**Method:** copied the repository to a fresh directory excluding every gitignored
+path, made a new venv, and followed the README quickstart literally.
+**Result: it passes end to end.** Install clean, `doctor --gpu` green, 11/11 papers
+fetched with **sha256 values identical to the original run**, ingest and index
+reproducing **fingerprint `e62c6925a03ad297` exactly**, and a cited answer out the
+far end.
+
+**It also caught two things the README claimed and could not support:**
+
+1. **"Subsequent runs answer in about 15 seconds" was wrong.** Measured: a single
+   `research-agent ask` takes **~45 seconds wall-clock**, of which ~30 s is process
+   start plus loading bge-m3 and the reranker. The 14.6 s p50 in the evaluation is
+   *in-process turn latency*, measured inside a loop where the encoders load once and
+   serve every question. Both numbers are true; only one of them is what a single
+   command costs, and the README was quoting the wrong one.
+2. **Windows MAX_PATH.** Installing torch into a deeply-nested directory fails with
+   `OSError: No such file or directory` on
+   `predicated_tile_access_iterator_residual_last.h` — a header nested past 260
+   characters. Reproduced at a 100-character clone path, clean at 36. Added to
+   troubleshooting with both fixes.
+
+The quickstart also used a shortened question whose answer is noticeably worse than
+the one showcased at the top of the README; it now uses the same question, so a
+reviewer sees what was advertised.
+**README line:** "The quickstart was tested by following it literally in a clean
+clone, which is how two of its own numbers turned out to be wrong."
+
+---
+
+## D-141 · Streamlit UI: two bugs that only appear when you actually run it
+**Date:** 2026-08-20
+**Decision:** `ui.py` imports `agent.run_turn` and renders the result. No business
+logic. Streamlit is in a separate `requirements-ui.txt` so the quickstart does not
+pull its dependency tree, and `research-agent ui` fails with a useful message if it
+is absent.
+
+**Two failures that static review would not have found, and that an HTTP 200 did not
+either — the first response was Streamlit's own error page:**
+
+1. **`ImportError: attempted relative import with no known parent package`.**
+   Streamlit executes the file as a top-level script rather than importing it as part
+   of the package, so `from . import agent` fails. Absolute imports work either way
+   because the package is installed.
+2. **`SQLite objects created in a thread can only be used in that same thread`.**
+   Streamlit serves each script re-run from a worker thread, and the connection was
+   cached across them by `@st.cache_resource`.
+   **Fixed inside the UI layer, not the core.** Encoders stay cached — they cost ~30
+   seconds — while the connection is opened per run. SQLite connections are cheap and
+   WAL already supports concurrent readers, so this is the correct pattern rather
+   than a workaround. Adding `check_same_thread=False` to `db.connect` would have
+   made the whole CLI carry a concession that only a server needs, and Step 14 is
+   explicit that the UI must not require core changes.
+
+**A third bug was mine, in the rendering.** Groundedness is scored per *(sentence,
+chunk)* pair, and the sources panel collapsed them to one score per chunk — so a
+passage supporting three sentences displayed only the last one's score. The visible
+symptom was a sentence marked `[unverified]` sitting directly above a source labelled
+"groundedness 1.000". It now shows the range across sentences.
+**Evidence:** driven in a real browser; a question answered end to end with cited,
+expandable sources and a "How this turn was decided" trace.
+**README line:** "The UI imports the agent and renders it — the two bugs it hit were
+both about Streamlit's execution model, and neither required a change to the core."
+
+---
+
+## D-142 · Web search: supplementary, same pipeline, default off
+**Date:** 2026-08-20
+**Decision:** `--web` appends web results to the corpus candidate pool. They are
+reranked, cited and groundedness-verified through the identical path, and render as
+`[web] Title — url` with a `web_` id prefix.
+**Four rules, each enforced rather than intended:**
+- **Supplementary, never a replacement.** Corpus candidates are always retrieved and
+  web results are appended; a test asserts no corpus candidate is displaced.
+- **Same pipeline.** Web results are adapted into the same `Hit` type. A separate
+  `WebHit` would have let web text take a different path through reranking and
+  verification, and taking the identical path is the entire point.
+- **Visibly distinguishable.** The `[web]` marker comes first, and `page_start` is 0
+  rather than an invented page number — a web page has no page, and putting a false
+  precision into a citation is exactly the kind of small lie this project exists to
+  prevent.
+- **Abstention must not regress.** Measured with the flag off: **4/4 controls abstain,
+  with identical routes to the pre-Phase-8 baseline.** A test also asserts the
+  corpus-only path makes no network call at all.
+**Provider:** DuckDuckGo's HTML endpoint — no API key, no account, no quota to
+account for. A second credential in the quickstart would undermine the project's
+"works with no key at all" property for the sake of an optional extension.
+**Consequence:** snippets are short, so a web citation carries less context than a
+corpus passage. A search outage returns an empty list and degrades to corpus-only
+rather than failing the turn.
+**The headline numbers stay corpus-only**, so the evaluation stays honest.
+**README line:** "Web search is supplementary, off by default, and goes through the
+same chunk-cite-verify path as the corpus — with the flag off, the control questions
+abstain identically and no network call is made."

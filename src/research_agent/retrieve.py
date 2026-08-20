@@ -53,8 +53,19 @@ class Hit:
     rank: int = 0
 
     @property
+    def is_web(self) -> bool:
+        return self.doc_id == "web"
+
+    @property
     def source_label(self) -> str:
-        """How a citation renders: "Paper Title · p.N"."""
+        """How a citation renders.
+
+        Corpus: "Paper Title · p.N". Web: "[web] Title — url". A reader must never
+        have to work out which kind of source they are looking at, so the marker
+        comes first and no page number is invented for a page that has none.
+        """
+        if self.is_web:
+            return f"[web] {self.title} — {self.section}"
         pages = (f"p.{self.page_start}" if self.page_start == self.page_end
                  else f"pp.{self.page_start}-{self.page_end}")
         return f"{self.title} · {pages}"

@@ -1,0 +1,10 @@
+# Optional: the Streamlit chat UI (Phase 8, Step 14).
+#
+# Deliberately NOT in requirements.txt. The UI is an extension; the core agent and
+# every measured number in the README come from the CLI, and a reviewer following the
+# quickstart should not download Streamlit's dependency tree to run it.
+#
+#   pip install -r requirements-ui.txt
+#   research-agent ui
+-r requirements.txt
+streamlit==1.62.0

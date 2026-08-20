@@ -186,6 +186,13 @@ class Config:
     )
     fetch_timeout_s: float = 120.0
 
+    # -- Web search (Phase 8, optional, default OFF) ------------------------
+    # Supplementary only. The headline evaluation numbers are corpus-only, and the
+    # control questions must abstain identically with the flag off.
+    web_enabled: bool = False
+    web_results: int = 5
+    web_timeout_s: float = 12.0
+
     # -- Ops ----------------------------------------------------------------
     log_level: str = "INFO"
     sqlite_busy_timeout_ms: int = 5000

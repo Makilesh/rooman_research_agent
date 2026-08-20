@@ -2,13 +2,13 @@
 
 **The sources do not contain an answer to this question.**
 
-The passages only mention BERT, and do not discuss Llama 2 model weights.
+top rerank 0.262 < tau_low 0.736: nothing in the corpus is a strong enough match to answer from
 
 _No citations are given, because there is nothing in the corpus to cite. This is the intended behaviour, not a failure._
 
 ---
 
-- Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 2750 ms
-- Passages in context: 2
-- Top rerank score: 0.9995
+- Route: `refuse`
+- Top rerank score: 0.2615
+- Retrieval loops: 2
+- Latency: 1110 ms
