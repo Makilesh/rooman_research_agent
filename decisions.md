@@ -2059,3 +2059,74 @@ and has not been done.
 **README line:** "Gemini improves every generation metric on single-turn questions and
 closes the last route failure; the conversational half of the same run was measured
 during a provider-load window and is not a clean comparison."
+
+---
+
+## D-148 · Key aliases follow the key, not its slot
+**Date:** 2026-08-21
+**Context:** The user replaced the Gemini keys and moved the two working ones into
+slots 1 and 2.
+**What that exposed:** quota is accounted per `(model, key_alias)`, and the alias was
+the slot number. Moving a key handed its consumption to whatever now occupied its
+slot. Measured immediately after the swap: the two **brand-new** keys showed 20/20 and
+18/20 RPD already consumed on the top rung, while the keys that had actually spent it
+showed 2/20. Both directions wrong at once -- the limiter would refuse fresh quota and
+over-spend drained quota.
+**Decision:** the alias is `k_` plus the first 10 hex of `sha256(key)`. It follows the
+key across slots, gives a genuinely new key a genuinely new identity, never contains
+any of the key, and collapses duplicates -- the same key in two slots shares one quota
+bucket, and counting it twice would double the apparent capacity.
+**Consequence:** historical rows keyed on `key_1..key_4` no longer match any live key
+and are ignored for quota. That is a one-time loss of accounting for keys that can no
+longer be identified, and it is unavoidable. The conservative reading is that some
+quota was already spent -- which is what the 16 observed 429s in the next run were,
+and rotation absorbed every one.
+**Evidence:** `test_key_alias_follows_the_key_not_its_position`,
+`test_key_alias_never_contains_the_key`, `test_duplicate_keys_collapse_to_one_bucket`.
+**README line:** "Quota is accounted per key identity, not per slot in the env file --
+moving a key between slots otherwise hands its spent quota to whatever replaces it."
+
+---
+
+## D-149 · A 429 is a third failure class
+**Date:** 2026-08-21
+**Context:** After the alias migration the local ledger could no longer see spend that
+had really happened, so the provider began returning 429s the limiter had not
+predicted.
+**Decision:** `is_rate_limited()` joins the existing permanent/transient split. A 429
+means the provider disagrees with the local ledger; the provider wins, and the client
+rotates to the next key and then the next rung. The key is **not** disabled -- unlike a
+403, this recovers on its own.
+**Why three classes and not two:** each needs a different response. Quota exhausted →
+step down a rung. Key rejected → disable and skip. Rate limited → rotate but keep.
+Transient → try again elsewhere. Collapsing any two produces an infinite retry or a
+needless abort, and I have now had both.
+**Evidence:** 16 × 429 during the second Gemini run, all absorbed by rotation; the run
+completed. `test_a_rate_limited_key_rotates_rather_than_aborting`.
+**README line:** "A 429 means the provider disagrees with the local ledger -- the
+provider wins, and the client rotates rather than failing the turn."
+
+---
+
+## D-150 · The ledger timestamp format is a trap for ad-hoc queries
+**Date:** 2026-08-21
+**Context:** While diagnosing a live run I twice concluded the system was failing
+badly when it was healthy.
+**Cause:** `llm_calls.ts` is timezone-aware ISO-8601 (`2026-08-21T04:12:00+00:00`)
+while every other table's `created_at` uses SQLite's `datetime('now')`
+(`2026-08-21 04:12:00`). They compare as strings, and at index 10 `T` (84) sorts after
+a space (32) -- so for any row **from today**, `ts >= datetime('now','-5 minutes')` is
+true regardless of the actual time. The date saves you across days, which is exactly
+why it hides: it only misfires while inspecting a run in progress, which is the only
+time anyone runs such a query.
+**The limiter was never affected** -- it compares ISO to ISO throughout. This is a
+hazard for anything written by hand against the ledger.
+**Decision:** `db.iso_cutoff()` produces a correctly-formatted bound, the column
+carries a comment saying so, and a test demonstrates the trap with a two-hour-old row
+that the naive comparison wrongly includes.
+**Why not just normalise the column:** it would need a migration over existing rows,
+and the ISO format is the right one for a timestamp that must be unambiguous across
+timezones. The fix is to make the correct comparison easy, not to weaken the storage.
+**README line:** "Ledger timestamps are ISO-8601 while SQLite's own defaults are not;
+a helper exists because comparing the two by hand silently matches every row from
+today."

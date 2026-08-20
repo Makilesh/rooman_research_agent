@@ -16,12 +16,12 @@ verified without spending a token. Runs on a local model with **no API key at al
 |---|---|
 | **Invented citations, across every run** | **0** — structurally impossible, not luck |
 | **Abstention accuracy** | **4/4** on unanswerable controls |
-| **Citation precision** | 0.882 local · **1.000** Gemini |
+| **Citation precision** | 0.882 local · **0.952–1.000** Gemini (2 runs) |
 | **Condensation drift rate** | **0/13** — the target was 0 |
-| **Rate-limit rejections in 607 billed API calls** | **0** |
+| **Rate-limit rejections, run 1 (607 billed calls)** | **0** |
 | Recall@5 — hybrid + rerank *(LLM-free)* | **0.646**, up from 0.479 single-retriever |
-| Tests | 156, no network, no model downloads |
-| Design decisions logged | 73, each with evidence |
+| Tests | 157, no network, no model downloads |
+| Design decisions logged | 76, each with evidence |
 
 **What is deliberately *not* claimed:** multi-hop synthesis. Measured at 1.00 papers
 per multi-hop answer on **both** providers — see [§12](#12--limitations).
@@ -478,16 +478,25 @@ number to its source: [`outputs/eval_report.md`](outputs/eval_report.md).
 
 Identical corpus, thresholds and retrieval; only the generator changed.
 
-| Metric | Local | Gemini |
-|---|---:|---:|
-| Citation precision | 0.882 | **1.000** |
-| Fact coverage | 0.660 | **0.881** |
-| Route accuracy, single-turn | 0.917 | **1.000 (12/12)** |
-| Abstention accuracy | 1.000 | **1.000** |
-| Invented citations | 0 | **0** |
-| Condensation drift | 0/13 | **0/13** |
-| Papers per multi-hop answer | 1.00 | 1.00 |
-| Recall@5 *(LLM-free)* | 0.646 | 0.646 |
+Gemini was run **twice**, independently, so the spread is visible rather than a
+single observation being presented as a point estimate.
+
+| Metric | Local | Gemini run 1 | Gemini run 2 |
+|---|---:|---:|---:|
+| Citation precision | 0.882 | **1.000** | **0.952** |
+| Fact coverage | 0.660 | **0.881** | **0.850** |
+| Route accuracy, single-turn | 0.917 | **1.000** | **1.000** |
+| Abstention accuracy | 1.000 | 1.000 | 1.000 |
+| Invented citations | 0 | 0 | 0 |
+| Condensation drift | 0/13 | 0/13 | 0/13 |
+| Papers per multi-hop answer | 1.00 | 1.00 | 1.00 |
+| Route accuracy, conversational | **10/13** | 7/13 | 8/13 |
+| Recall@5 *(LLM-free)* | 0.646 | 0.646 | 0.646 |
+
+**Single-turn route accuracy of 1.000 reproduced across both runs**, as did 4/4
+abstention, zero invented citations and zero drift. Citation precision and fact
+coverage moved a little between runs — consistent with retries under provider load,
+and reported as a range for that reason.
 
 The retrieval row is identical **by construction** — which is exactly why it is
 measured separately. Only generation columns move with the model.
@@ -501,11 +510,12 @@ answers from one. That **rules out model capability** as the explanation and poi
 context construction.
 
 > **One comparison I will not make.** Conversational route accuracy came out lower on
-> Gemini, but both Gemini runs coincided with provider-load windows — 14 and 17
-> occurrences of `503 UNAVAILABLE` respectively, plus dropped connections. Key
-> rotation kept the runs alive, but a turn served after several failed attempts is not
-> the same experiment as one served first time. **I am not claiming Gemini is worse
-> conversationally.** A clean re-run in a quiet window is the honest next step.
+> Gemini in both runs (7/13, 8/13) — but both coincided with provider-load windows:
+> 14 and 32 occurrences of `503 UNAVAILABLE`, plus dropped connections, pushing p95
+> turn latency to 145 s. Key rotation kept the runs alive, but a turn served after
+> several failed attempts is not the same experiment as one served first time.
+> **I am not claiming Gemini is worse conversationally.** I attempted the clean re-run
+> and the provider was loaded again; it remains the honest next step.
 
 ---
 
