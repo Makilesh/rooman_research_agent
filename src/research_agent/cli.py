@@ -442,8 +442,21 @@ def index_cmd() -> None:
         raise typer.Exit(1)
 
 
+_MODELS: dict = {}
+
+
+def _load_models(cfg: Config):
+    """Load the encoders once per process. A batch of twelve questions would
+    otherwise pay the load cost twelve times."""
+    if not _MODELS:
+        _MODELS['embedder'] = index_mod.load_embedder(cfg)
+        _MODELS['vectors'] = index_mod.load_vectors(cfg)
+        _MODELS['reranker'] = rerank_mod.load_reranker(cfg)
+    return _MODELS['embedder'], _MODELS['vectors'], _MODELS['reranker']
+
+
 def _answer_once(cfg: Config, question: str, provider: str | None,
-                 save: str | None, show_retrieval: bool):
+                 save: str | None, show_retrieval: bool, quiet: bool = False):
     """Retrieve, synthesise, verify, persist, render. One turn, end to end."""
     conn = db.connect(cfg)
     db.migrate(conn)
@@ -453,9 +466,7 @@ def _answer_once(cfg: Config, question: str, provider: str | None,
         _fail("index is stale", stale)
         raise typer.Exit(1)
 
-    embedder = index_mod.load_embedder(cfg)
-    vectors = index_mod.load_vectors(cfg)
-    reranker = rerank_mod.load_reranker(cfg)
+    embedder, vectors, reranker = _load_models(cfg)
 
     dense = retrieve.dense_search(
         conn, retrieve.embed_query(embedder, question), vectors, cfg)
@@ -464,7 +475,10 @@ def _answer_once(cfg: Config, question: str, provider: str | None,
     top = rerank_mod.rerank(reranker, question, fused, cfg)
     # Retrieval wants precision, synthesis wants context: answer over the parent
     # passages the winning children came from.
-    context_hits = retrieve.expand_to_parents(conn, top)
+    context_hits = retrieve.fit_context_budget(
+        retrieve.expand_to_parents(conn, top), cfg,
+        count_tokens=index_mod.token_counter(embedder),
+    )
 
     if show_retrieval:
         t = Table(show_edge=False, title_justify="left", title="CONTEXT")
@@ -497,11 +511,15 @@ def _answer_once(cfg: Config, question: str, provider: str | None,
     turn_id = answer_mod.persist(conn, result, session, ord_=1, route=route)
     result = replace(result, turn_id=turn_id)
 
-    console.print(report.render_answer_markdown(result))
+    # rich treats [unverified] and [^1] as console markup and swallows them.
+    if not quiet:
+        console.print(report.render_answer_markdown(result), markup=False,
+                      highlight=False)
 
     if save:
         md, js = report.write_answer(cfg, result, save)
-        _ok(f"wrote {md.relative_to(cfg.repo_root)} and {js.name}")
+        if not quiet:
+            _ok(f"wrote {md.relative_to(cfg.repo_root)} and {js.name}")
     return result
 
 
@@ -791,6 +809,71 @@ def eval_retrieval(
     if write:
         path = report.write_eval_report(cfg, results, label_set, evidence)
         _ok(f"wrote {path.relative_to(cfg.repo_root)}")
+
+
+@app.command("answer-all")
+def answer_all(
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    only: str = typer.Option(None, "--only", help="Comma-separated question ids."),
+) -> None:
+    """Run the whole single-turn question set and report the contract properties."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    label_set = labels_mod.load(cfg)
+
+    wanted = set(only.split(",")) if only else None
+    items = [i for i in label_set.items if not wanted or i.id in wanted]
+
+    rows = []
+    for item in items:
+        console.print(f"[dim]-> {item.id}[/dim]")
+        try:
+            result = _answer_once(cfg, item.question, provider, item.id,
+                                  show_retrieval=False, quiet=True)
+            invented = result.cited_chunk_ids - {h.chunk_id for h in result.hits}
+            rows.append({
+                "id": item.id, "class": item.cls,
+                "expected": "abstain" if item.must_abstain else "answer",
+                "actual": "abstain" if result.is_refusal else "answer",
+                "schema_ok": True, "invented": len(invented),
+                "n_sent": len(result.sentences),
+                "n_cites": len(result.cited_chunk_ids),
+                "verified": sum(1 for s in result.sentences if s.status == "verified"),
+                "ms": result.latency_ms,
+            })
+        except Exception as exc:
+            rows.append({"id": item.id, "class": item.cls,
+                         "expected": "abstain" if item.must_abstain else "answer",
+                         "actual": f"ERROR {type(exc).__name__}", "schema_ok": False,
+                         "invented": 0, "n_sent": 0, "n_cites": 0, "verified": 0,
+                         "ms": 0})
+            _fail(item.id, f"{type(exc).__name__}: {exc}")
+
+    t = Table(show_edge=False)
+    for c in ("id", "class", "expected", "actual", "sent", "cites", "verified", "ms"):
+        t.add_column(c, justify="right" if c in ("sent", "cites", "verified", "ms") else "left")
+    for r in rows:
+        mark = "" if r["actual"].startswith(r["expected"][:6]) else "  <-- MISMATCH"
+        t.add_row(r["id"], r["class"], r["expected"], r["actual"] + mark,
+                  str(r["n_sent"]), str(r["n_cites"]), str(r["verified"]), str(r["ms"]))
+    console.print()
+    console.print(t)
+
+    n = len(rows)
+    schema_ok = sum(1 for r in rows if r["schema_ok"])
+    no_invented = sum(1 for r in rows if r["invented"] == 0)
+    controls = [r for r in rows if r["expected"] == "abstain"]
+    controls_ok = sum(1 for r in controls if r["actual"] == "abstain")
+    refusals_clean = all(r["n_cites"] == 0 for r in rows if r["actual"] == "abstain")
+
+    console.print()
+    console.print(f"  schema-valid                         {schema_ok}/{n}")
+    console.print(f"  zero invented citation ids           {no_invented}/{n}")
+    console.print(f"  controls that abstained              {controls_ok}/{len(controls)}")
+    console.print(f"  refusals carrying zero citations     {'yes' if refusals_clean else 'NO'}")
+    total_cites = db.scalar(conn, "SELECT COUNT(*) FROM turn_citations") or 0
+    console.print(f"  turn_citations rows in the database  {total_cites}")
 
 
 @app.command("db")

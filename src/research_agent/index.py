@@ -86,7 +86,18 @@ def token_counter(model) -> Callable[[str], int]:
     tok = model.tokenizer
 
     def count(text: str) -> int:
-        return len(tok.encode(text, add_special_tokens=False))
+        # `encode` warns when the result exceeds the model's window. Here we are
+        # counting, not running inference, so that warning is noise -- scoped rather
+        # than silenced globally, which would hide real ones.
+        import logging
+
+        logger = logging.getLogger("transformers.tokenization_utils_base")
+        previous = logger.level
+        logger.setLevel(logging.ERROR)
+        try:
+            return len(tok.encode(text, add_special_tokens=False))
+        finally:
+            logger.setLevel(previous)
 
     return count
 

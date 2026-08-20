@@ -64,16 +64,24 @@ RULES, in order of priority:
    that is not in the SOURCES block. If you cannot support a sentence with a passage,
    delete the sentence.
 
-3. If the passages do not contain the answer, set insufficient_evidence to true, give
+3. CHECK THE ATTRIBUTION BEFORE YOU ANSWER. Each passage is labelled with the paper
+   it comes from. If the question asks what a SPECIFIC paper, model, or system says,
+   and the passages that mention the topic come from a DIFFERENT paper, then the
+   sources do not answer the question. Say so. A passage about the right topic from
+   the wrong paper is not evidence — it is the most convincing way to be wrong, and
+   it will pass every other check because the sentence really is in the passage you
+   cited.
+
+4. If the passages do not contain the answer, set insufficient_evidence to true, give
    a refusal_reason naming what is missing, and return an empty sentences list. This
    is a correct and valued outcome, not a failure. Refusing when the sources are
    silent is more useful than a plausible guess.
 
-4. If the question assumes something the passages contradict, do NOT play along and do
+5. If the question assumes something the passages contradict, do NOT play along and do
    NOT simply refuse. Say plainly that the premise is wrong, then cite what the
    passages actually say. Set insufficient_evidence to false for this case.
 
-5. Be specific. Prefer the exact figure, name, or setting from the passage over a
+6. Be specific. Prefer the exact figure, name, or setting from the passage over a
    paraphrase. Do not add caveats the passages do not support."""
 
 
@@ -97,6 +105,17 @@ QUESTION: What learning rate schedule is used?
 
 {"insufficient_evidence": true, "refusal_reason": "The passages give the batch size
 and step count but say nothing about a learning rate schedule.", "sentences": []}
+
+EXAMPLE — right topic, WRONG PAPER (the passages must be refused):
+
+SOURCES:
+[c_demo_0004] (Beta Paper · p.9) We provide evaluations on MMLU.
+
+QUESTION: How does the Alpha paper evaluate on MMLU?
+
+{"insufficient_evidence": true, "refusal_reason": "The only passage mentioning MMLU
+is from the Beta paper. Nothing here shows the Alpha paper evaluating on MMLU.",
+"sentences": []}
 
 EXAMPLE — the question's premise is wrong:
 

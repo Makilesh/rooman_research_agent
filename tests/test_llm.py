@@ -78,10 +78,19 @@ def test_default_ladders_validate():
 
 
 def test_thresholds_guard_blocks_use_before_measurement():
-    cfg = Config()
-    assert cfg.thresholds_are_measured is False
+    """The shipped defaults ARE measured (Step 5), but the guard must still bite for
+    anyone who resets them -- a zero floor routes everything to ANSWER silently."""
+    assert Config().thresholds_are_measured is True
+    unmeasured = Config(thresholds_are_measured=False, tau_low=0.0, tau_high=0.0)
     with pytest.raises(RuntimeError, match="Step 5"):
-        cfg.require_measured_thresholds()
+        unmeasured.require_measured_thresholds()
+
+
+def test_shipped_thresholds_are_internally_consistent():
+    cfg = Config()
+    cfg.require_measured_thresholds()
+    assert 0.0 < cfg.tau_low < cfg.tau_high <= 1.0
+    assert 0.0 < cfg.tau_verify < 1.0
 
 
 def test_measured_thresholds_must_be_ordered():

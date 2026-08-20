@@ -234,8 +234,9 @@ def test_a_refusal_needs_no_verification(cfg):
 def test_verification_refuses_to_run_on_unmeasured_thresholds(cfg):
     """A zero floor marks everything verified, which is worse than not verifying."""
     ans = _answer([CitedSentence(0, "x", ["c_lora_0020"])])
+    unmeasured = replace(cfg, thresholds_are_measured=False, tau_verify=0.0)
     with pytest.raises(RuntimeError, match="Step 5"):
-        verify.verify_answer(cfg, FakeReranker({}), ans)
+        verify.verify_answer(unmeasured, FakeReranker({}), ans)
 
 
 # ---------------------------------------------------------------------------

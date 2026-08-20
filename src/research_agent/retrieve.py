@@ -213,3 +213,26 @@ def expand_to_parents(conn: Connection, hits: Sequence[Hit]) -> list[Hit]:
                            page_start=row["page_start"], page_end=row["page_end"],
                            section=row["section"]))
     return out
+
+
+def fit_context_budget(hits: Sequence[Hit], cfg: Config,
+                       count_tokens=None) -> list[Hit]:
+    """Keep the highest-ranked passages that fit the context budget.
+
+    Drops whole passages, never part of one. Truncating a passage's text would mean
+    the verifier scores against text the synthesiser did not see -- the exact failure
+    this system is built to avoid -- and would let the model cite a chunk id whose
+    content it only partially received.
+    """
+    # Deliberately conservative: over-estimating tokens costs a passage, while
+    # under-estimating costs a silently truncated prompt.
+    count = count_tokens or (lambda t: len(t) // 3)
+    kept: list[Hit] = []
+    used = 0
+    for hit in hits:
+        cost = count(hit.text)
+        if kept and used + cost > cfg.context_max_tokens:
+            continue
+        kept.append(hit)
+        used += cost
+    return kept
