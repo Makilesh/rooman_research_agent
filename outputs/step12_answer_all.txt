@@ -1,0 +1,35 @@
+-> q01_transformer_heads
+-> q02_dpr_similarity
+-> q03_qlora_nf4
+-> q04_lora_rank_gpt3
+-> q05_chinchilla_vs_gpt3
+-> q06_rag_uses_dpr
+-> q07_lora_to_qlora_memory
+-> q08_mmlu_on_transformer
+-> q09_gpt4_training_cost
+-> q10_llama2_license
+-> q11_nf4_attributed_to_lora
+-> q12_react_llama3_lr
+
+ id   │ cla… │ exp… │ actu… │ sent │ cit… │ pape… │ ver… │ loops │ subs │   ms 
+──────┼──────┼──────┼───────┼──────┼──────┼───────┼──────┼───────┼──────┼──────
+ q01… │ sin… │ ans… │ answ… │    2 │    2 │     1 │    2 │     2 │    3 │ 138… 
+ q02… │ sin… │ ans… │ answ… │    3 │    2 │     1 │    2 │     0 │    0 │ 8906 
+ q03… │ sin… │ ans… │ answ… │    5 │    1 │     1 │    5 │     0 │    0 │ 142… 
+ q04… │ sin… │ ans… │ answ… │    2 │    1 │     1 │    2 │     2 │    4 │ 156… 
+ q05… │ mul… │ ans… │ answ… │    2 │    1 │     1 │    2 │     2 │    3 │ 157… 
+ q06… │ mul… │ ans… │ answ… │    2 │    2 │     1 │    2 │     0 │    0 │ 6750 
+ q07… │ mul… │ ans… │ answ… │    5 │    2 │     2 │    5 │     1 │    0 │ 196… 
+ q08… │ una… │ abs… │ abst… │    0 │    0 │     0 │    0 │     0 │    0 │ 5186 
+ q09… │ una… │ abs… │ refu… │    0 │    0 │     0 │    0 │     0 │    0 │ 2141 
+ q10… │ una… │ abs… │ abst… │    0 │    0 │     0 │    0 │     2 │    4 │ 163… 
+ q11… │ fal… │ ans… │ abst… │    0 │    0 │     0 │    0 │     2 │    4 │ 134… 
+      │      │      │ <--   │      │      │       │      │       │      │      
+      │      │      │ MISM… │      │      │       │      │       │      │      
+ q12… │ fal… │ abs… │ refu… │    0 │    0 │     0 │    0 │     2 │    0 │ 6860 
+
+  schema-valid                         12/12
+  zero invented citation ids           12/12
+  controls that abstained              4/4
+  refusals carrying zero citations     yes
+  turn_citations rows in the database  182

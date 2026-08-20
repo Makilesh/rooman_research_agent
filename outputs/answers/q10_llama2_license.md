@@ -2,13 +2,13 @@
 
 **The sources do not contain an answer to this question.**
 
-The passages do not mention the license under which the Llama 2 model weights were released.
+The passages only mention BERT, and do not discuss Llama 2 model weights.
 
 _No citations are given, because there is nothing in the corpus to cite. This is the intended behaviour, not a failure._
 
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 3328 ms
-- Passages in context: 3
-- Top rerank score: 0.0321
+- Latency: 2750 ms
+- Passages in context: 2
+- Top rerank score: 0.9995

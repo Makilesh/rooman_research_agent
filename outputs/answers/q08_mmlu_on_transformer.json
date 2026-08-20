@@ -1,7 +1,7 @@
 {
   "question": "How does Attention Is All You Need evaluate the Transformer on the MMLU benchmark?",
   "insufficient_evidence": true,
-  "refusal_reason": "The only passages mentioning MMLU evaluation are from a different paper than Attention Is All You Need.",
+  "refusal_reason": "The passages mention experiments on WMT 2014 English-to-German translation and English constituency parsing, but not MMLU.",
   "sentences": [],
   "sources": [
     {
@@ -37,6 +37,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_efcd3bae8371"
+  "latency_ms": 3592,
+  "turn_id": "t_f74c941c3f67"
 }
