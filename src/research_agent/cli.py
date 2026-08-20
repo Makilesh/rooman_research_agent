@@ -698,12 +698,17 @@ def eval_retrieval(
                           f"|  {(keep + rej) / 2:6.1%}")
         best_tau, best_bal = evidence.sweep.best_f1()
         console.print(f"\n  balanced-accuracy peak at tau={best_tau:.2f} ({best_bal:.1%})")
-        console.print(f"\n  [bold]TAU_LOW    = {evidence.tau_low}[/bold]   "
-                      f"(p95 of the control population — refuse below this)")
-        console.print(f"  [bold]TAU_HIGH   = {evidence.tau_high}[/bold]   "
-                      f"(p25 of the gold population — answer above this)")
-        console.print(f"  [bold]TAU_VERIFY = {evidence.tau_verify}[/bold]   "
-                      f"(p75 of the control population — groundedness floor)")
+        if not evidence.separable:
+            console.print()
+            _warn("the two routing populations OVERLAP",
+                  "no single threshold separates them cleanly")
+        for name, value in (("TAU_LOW", evidence.tau_low),
+                            ("TAU_HIGH", evidence.tau_high),
+                            ("TAU_VERIFY", evidence.tau_verify)):
+            console.print(f"\n  [bold]{name} = {value}[/bold]")
+            console.print(f"    [dim]{evidence.derivation.get(name.lower(), '')}[/dim]")
+        console.print(f"\n  Between {evidence.tau_low} and {evidence.tau_high} the "
+                      f"agent asks rather than guesses.")
 
     calls_after = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
     console.print()

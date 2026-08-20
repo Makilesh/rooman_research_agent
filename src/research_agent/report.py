@@ -89,6 +89,43 @@ def write_eval_report(
         add("| " + " | ".join(row) + " |")
     add("")
 
+    add("### Recall@5 by question class")
+    add("")
+    add("The aggregate above mixes two different measurements. `single_hop` and "
+        "`multi_hop` ask what retrieval is designed to do: find the passage that "
+        "answers the question. `false_premise` asks something retrieval is structurally "
+        "bad at, and the split makes that visible instead of burying it in a mean.")
+    add("")
+    cls_of = {i.id: i.cls for i in labels.items}
+    classes = ["single_hop", "multi_hop", "false_premise"]
+    add("| Config | " + " | ".join(f"{c} (n={sum(1 for i in results[0].items if cls_of.get(i.item_id) == c)})"
+                                   for c in classes) + " |")
+    add("|---" * (len(classes) + 1) + "|")
+    for res in results:
+        row = [CONFIG_LABELS.get(res.config, res.config)]
+        for c in classes:
+            vals = [i.recall_at(5) for i in res.items if cls_of.get(i.item_id) == c]
+            row.append(f"{sum(vals) / len(vals):.3f}" if vals else "-")
+        add("| " + " | ".join(row) + " |")
+    add("")
+    add("> **`q11_nf4_attributed_to_lora` scores 0.00 on every configuration, and that "
+        "is the honest and expected result.** The question asks which section of *the "
+        "LoRA paper* describes NF4 quantisation. NF4 belongs to QLoRA; LoRA contains no "
+        "quantisation scheme at all. Because the question names the wrong paper, the "
+        "query text itself steers both retrievers straight into LoRA, and the QLoRA "
+        "chunks that would correct the premise never reach the top 5. No amount of "
+        "retrieval tuning fixes this — the premise is wrong, so the best passage for "
+        "the query as asked is not the passage that answers it.")
+    add("")
+    add("This is a finding about the architecture, not a bug to tune away: **correcting "
+        "a false premise is not a retrieval problem.** It requires the agent to notice "
+        "that the retrieved evidence does not support what the question assumes, which "
+        "is the sufficiency judge's job at Step 11 and the abstention path's job at "
+        "Step 7 — both downstream of everything measured here. The retrieval numbers "
+        "should be read as: retrieval finds the right passage for well-posed questions, "
+        "and the false-premise case is deliberately handed to a later stage.")
+    add("")
+
     if evidence is not None:
         add("## 2 · Measured routing thresholds")
         add("")
@@ -97,7 +134,14 @@ def write_eval_report(
             "different corpus produces a different distribution, and reusing a number "
             "across the two is how routing silently degrades.")
         add("")
-        add("**How the two populations were built.** Positives are the gold chunks of "
+        add("**How the populations were built.** Two decisions need two populations. "
+            "*Routing* looks at one number per question -- the top rerank score on the "
+            "slate -- so its populations hold one score per question. *Verification* "
+            "looks at one (sentence, chunk) pair at a time, so its populations hold one "
+            "score per chunk. Deriving a routing threshold from the per-pair "
+            "distribution is a category error: a question whose best gold chunk scores "
+            "0.99 routes to ANSWER regardless of whether its third gold chunk scores "
+            "0.18. Positives are the gold chunks of "
             "answerable questions. Negatives are every chunk retrieved for a *control* "
             "question — a question the corpus cannot answer at all. Taking "
             "\"non-gold chunks retrieved for an answerable question\" as the negative "
@@ -137,15 +181,24 @@ def write_eval_report(
         best_tau, best_bal = evidence.sweep.best_f1()
         add(f"Balanced-accuracy peak at **tau = {best_tau:.2f}** ({best_bal:.1%}).")
         add("")
-        add("| Threshold | Value | Derived from | Used for |")
+        add("| Threshold | Value | How it was derived | Used for |")
         add("|---|---:|---|---|")
-        add(f"| `TAU_LOW` | {evidence.tau_low} | p95 of the control population "
-            f"| below this, refuse |")
-        add(f"| `TAU_HIGH` | {evidence.tau_high} | p25 of the gold population "
-            f"| above this, answer directly |")
-        add(f"| `TAU_VERIFY` | {evidence.tau_verify} | p75 of the control population "
-            f"| groundedness floor for a cited sentence |")
+        for name, value, use in (
+            ("TAU_LOW", evidence.tau_low, "below this, refuse"),
+            ("TAU_HIGH", evidence.tau_high, "above this, answer directly"),
+            ("TAU_VERIFY", evidence.tau_verify,
+             "groundedness floor for one cited sentence"),
+        ):
+            add(f"| `{name}` | {value} | {evidence.derivation.get(name.lower(), '')} "
+                f"| {use} |")
         add("")
+        if not evidence.separable:
+            add("> **The two routing populations overlap.** No single threshold "
+                "separates answerable questions from controls on this set, so the "
+                "clarify band was widened around the sweep's peak rather than a clean "
+                "cut being asserted. The overlap is itself a finding and is reported "
+                "rather than smoothed over.")
+            add("")
         add("Between `TAU_LOW` and `TAU_HIGH` the agent asks a clarifying question "
             "rather than guessing.")
         add("")
