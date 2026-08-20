@@ -193,3 +193,35 @@ def ensure_session(conn: Connection, session_id: str, fingerprint: str | None) -
         })
         conn.commit()
     return session_id
+
+
+def from_cached(payload: dict) -> Answer:
+    """Rebuild an Answer from a cached JSON record.
+
+    Without this a semantic cache hit returned `answer=None` and the stored answer was
+    silently discarded -- the turn reported zero sentences and zero citations in ~14ms
+    and looked like a catastrophic failure rather than a cache hit. A cache that loses
+    the thing it cached is worse than no cache.
+    """
+    hits = [
+        Hit(s["chunk_id"], s["doc_id"], s["title"], s["page_start"], s["page_end"],
+            s.get("section"), s.get("text", ""), rerank_score=s.get("rerank_score"),
+            rank=i + 1)
+        for i, s in enumerate(payload.get("sources") or [])
+    ]
+    sentences = [
+        CitedSentence(idx=s["idx"], text=s["text"], chunk_ids=list(s["cite"]),
+                      verify_scores=dict(s.get("verify_scores") or {}),
+                      status=s.get("status", "verified"))
+        for s in (payload.get("sentences") or [])
+    ]
+    return Answer(
+        question=payload.get("question", ""),
+        insufficient_evidence=bool(payload.get("insufficient_evidence", False)),
+        refusal_reason=payload.get("refusal_reason"),
+        sentences=sentences, hits=hits,
+        context="",  # not persisted; verification already ran before caching
+        provider=payload.get("provider", "cache"),
+        model=payload.get("model", "cache"),
+        latency_ms=0, turn_id=payload.get("turn_id"),
+    )

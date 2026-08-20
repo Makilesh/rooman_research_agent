@@ -1326,3 +1326,193 @@ honest move is to say which, not to adjust the expectations until they pass.
 **README line:** "Route accuracy is 10/13 and drift is 0/13; of the four conversation
 gates one passed cleanly, one passed in mechanism, one partially, and one failed —
 reported per scenario rather than as a single number."
+
+---
+
+## D-028 · A plain state machine, and one implementation of it
+**Date:** 2026-08-20
+**Decision:** the turn loop is ~200 lines of ordinary Python in `agent.py` and
+`sufficiency.py`. No LangGraph.
+**Why:** I have shipped LangGraph in production. Here it would hide exactly the logic
+a reviewer most wants to read — the flow is one function you can follow top to bottom,
+and the trace prints the nodes it actually visited rather than a graph definition
+describing nodes it might.
+**A duplication caught while wiring this up:** `ask` had grown its own copy of the
+retrieve/synthesise/verify pipeline alongside `chat`'s. It silently missed every
+capability added to the conversational path, the sufficiency loop included. `ask` is
+now a session with one turn, going through the same state machine. Two
+implementations of one pipeline is how a system develops behaviour nobody intended.
+**Evidence:** `ask --trace` prints the loop; the same code serves `chat`.
+**README line:** "The agent loop is plain Python, and there is exactly one of it — a
+single-turn question is just a session with one turn."
+
+---
+
+## D-029 · Sub-questions are reranked against themselves
+**Date:** 2026-08-20
+**Decision:** each sub-question is retrieved *and reranked* using itself as the query;
+results are merged by best score per chunk.
+**Why:** scoring sub-question results against the parent query undoes the
+decomposition. A passage answering one part of a composite question need not resemble
+the composite question at all. In my M&A engine this detail was worth roughly +20pp
+fact coverage.
+**Consequence on this corpus:** it did not reproduce that gain — see D-127. The
+mechanism is asserted by test regardless, because if decomposition is ever worth
+having, this is the part that makes it work.
+**Evidence:** `test_sub_questions_are_reranked_against_themselves` asserts each
+sub-question appears as its own rerank query and that evidence from both survives.
+**README line:** "Each sub-question is reranked against itself, not the parent query —
+otherwise decomposition throws away the thing it was for."
+
+---
+
+## D-030 · Progressive constraint relaxation
+**Date:** 2026-08-20
+**Context:** In the M&A engine a wrong first-pass category guess removed whole
+documents from the search space, and no amount of query rewriting recovered the
+answer — the evidence was never a candidate.
+**Decision:** the first attempt scopes retrieval to any paper the question names
+explicitly; every retry drops that scope entirely. Tight first for precision, loose on
+retry for recall. A scope is also never allowed to empty the candidate set, because an
+empty slate can only be refused and that hides the reason.
+**Why it matters here specifically:** a question that names the *wrong* paper — "which
+section of the LoRA paper describes NF4" — is answerable only after the scope is gone.
+The filter that helps a well-posed question is exactly the filter that makes a
+false-premise question unanswerable.
+**Evidence, live:** on "How does QLoRA reduce memory beyond what LoRA alone achieves?"
+the first pass scoped to `['lora', 'qlora']` and scored 0.915; the judge called it
+insufficient; the retry dropped the scope and scored **0.979**, and the judge passed
+it. `test_relaxation_drops_the_scope_on_retry` asserts the mechanism.
+**README line:** "Any filter applied on the first retrieval is dropped on retry,
+because a wrong first-pass guess removes the answer from the search space and no
+amount of rewriting brings it back."
+
+---
+
+## D-031 · Termination is structural, not conditional
+**Date:** 2026-08-20
+**Decision:** the loop is a bounded `for` over `max_retrieval_loops + 1`. There is no
+exit condition a model can influence.
+**Why:** an agentic loop whose termination depends on a judge returning `sufficient`
+can be talked out of stopping. Making the bound structural means no mock, and no
+model, however pathological, can make it run away.
+**Evidence:** `test_the_loop_always_terminates` is parameterised over four adversarial
+judge/decompose/rewrite configurations, including one where nothing ever succeeds.
+**README line:** "The retrieval loop is a bounded for-loop, not a while-loop with an
+exit condition the model controls."
+
+---
+
+## D-127 · Decomposition does NOT improve fact coverage on this corpus
+**Date:** 2026-08-20
+**Context:** Step 7 measured all three multi-hop questions answering from a single
+paper. Sub-question decomposition was the specified fix, and I expected it to work —
+it was worth about +20pp in my previous system.
+**Measured, three multi-hop questions, decomposition off vs on:**
+
+| question | facts off | facts on | papers off | papers on | subs |
+|---|---:|---:|---:|---:|---:|
+| q05 chinchilla vs gpt3 | 0.50 | **0.25** | 1 | 1 | 3 |
+| q06 rag uses dpr | 0.50 | 0.50 | 1 | 1 | 0 |
+| q07 lora to qlora | 0.20 | 0.20 | 1 | 1 | 0 |
+| **mean** | **0.40** | **0.32** | **1.00** | **1.00** | |
+
+**It is slightly worse, and it does not move paper spread at all.** Decomposition
+fired on exactly one of the three, and that one got *worse*.
+
+**Why, as far as the evidence shows.** Two things. First, this corpus cross-references
+itself: the Chinchilla introduction states GPT-3's ~300B training tokens, so a
+single-paper answer is genuinely available and the model takes it. Second, splitting
+q05 into three sub-questions widened the merged slate, and the context token budget
+then dropped the weaker half — so decomposition *added* candidates and the budget
+*removed* them, ending with a thinner answer than the undecomposed query produced.
+
+**Decision:** keep the mechanism, report the number, and do not claim the capability.
+The spec asked for this to measurably help or be reported honestly as not helping. It
+does not help here.
+**What I would try next, not built:** raise the context budget when a decomposition
+has fired, so sub-question evidence is not immediately discarded by the very budget
+that made room for it; and require the synthesiser to attempt one sentence per
+sub-question. Both are guesses until measured.
+**Evidence:** the table above, from a direct on/off comparison with the semantic cache
+cleared between runs.
+**Revisit if:** the context budget is made decomposition-aware.
+**README line:** "Sub-question decomposition was built, measured, and does not improve
+fact coverage on this corpus (0.40 to 0.32) — reported as measured rather than
+claimed as a feature."
+
+---
+
+## D-128 · Multi-hop remains unsolved after the loop — the gap, restated
+**Date:** 2026-08-20
+**Context:** D-121 recorded multi-hop answers coming from one paper and named two
+fixes: the diversity guard (Step 10) and decomposition (Step 11). Both are now built.
+**Measured:** papers cited per multi-hop answer is still **1.00**, with the diversity
+guard active and with decomposition on.
+**What this says.** The diversity guard does get a second paper into the *context
+slate* — that is asserted by test. The failure has moved one stage later: the
+**synthesiser** receives passages from two papers and still writes its answer from
+one. That is a different problem from the one diagnosed at Step 7, and neither of the
+two fixes addresses it.
+**Decision:** stop claiming multi-hop, and say precisely where it fails. The three
+multi-hop answers are correct and well-cited; they are not multi-hop.
+**What would actually address it, not built:** the synthesis prompt does not ask for
+cross-document synthesis at all. A rule requiring that, when passages from two papers
+are supplied for a comparative question, the answer cite both — plus a check that
+fails the answer if it does not — is the obvious next move, and it is a Step 7 change
+rather than a Step 11 one.
+**Evidence:** the D-127 table; `outputs/answers/q0{5,6,7}.json`.
+**README line:** "Multi-hop is not solved: the diversity guard puts a second paper in
+the context, and the synthesiser still answers from one. The failure is in synthesis,
+not retrieval, and that is where the next fix belongs."
+
+---
+
+## D-129 · A semantic cache hit was discarding the cached answer
+**Date:** 2026-08-20
+**Context:** In a full run, `q07` reported **0 sentences, 0 citations, 14ms**. It
+looked like a catastrophic pipeline failure.
+**Cause:** it was a cache hit. The cache lookup returned the stored record, but the
+turn was constructed with `answer=None` — nothing ever reconstructed an `Answer` from
+the JSON. The cache stored the answer correctly and then threw it away on retrieval.
+**Why it hid so well:** the failure is indistinguishable from a legitimate empty
+result unless you notice the 14ms. Every other check passed; the row simply had zeros
+in it.
+**Decision:** `answer.from_cached()` rebuilds a full `Answer` from the stored record,
+and the sources record now includes passage text so a restored answer is renderable.
+Both eval commands clear the cache before running, for the reproducibility reason in
+D-125.
+**Consequence:** a cache hit is now indistinguishable from a fresh answer in output,
+and reports its cosine similarity in the route reason.
+**Evidence:** before, `q07` returned 0/0/14ms; after, 3 sentences and 3 verified.
+**README line:** "A cache that loses the thing it cached is worse than no cache — a
+hit now rebuilds the full answer, and evaluation always starts from an empty one."
+
+---
+
+## D-130 · The router made the false-premise question worse
+**Date:** 2026-08-20
+**Context:** At Step 7, `q11` ("which section of the LoRA paper describes its NF4
+quantisation?") correctly cited QLoRA. After the router landed, it refuses.
+**Cause, traced:** scoping retrieval to LoRA — which the question names — produces
+uniformly low rerank scores, because LoRA contains no quantisation content. Those low
+scores are *correct evidence that the premise is false*. But the sufficiency judge
+declared the LoRA passages sufficient, so relaxation never fired, and the router then
+refused on the low top score.
+**The shape of the problem:** the low score means two different things — "the corpus
+cannot answer this" and "the corpus cannot answer this *as asked*" — and the router
+cannot tell them apart, because a single scalar cannot carry that distinction.
+**Decision:** record it as a regression rather than special-casing the router. A rule
+that answers when the score is low would break the abstention controls, which is a
+worse trade.
+**Consequence:** false-premise correction currently works only when the named paper is
+not scoped away, which for `q11` it always is. The honest fix is for the judge to
+recognise "right topic, wrong paper" — which the *synthesis* prompt already does since
+D-119, but the judge prompt asks a different question and gets it wrong.
+**Evidence:** `q11` answered at Step 7, refuses at Step 11; loop trace shows `loops=0`,
+meaning the judge passed the scoped LoRA evidence.
+**Revisit if:** the judge prompt is aligned with the synthesis prompt's attribution
+rule. That is the single most likely thing to fix it.
+**README line:** "Adding the router made one false-premise question worse: a low
+retrieval score means both 'unanswerable' and 'unanswerable as asked', and one number
+cannot distinguish them."

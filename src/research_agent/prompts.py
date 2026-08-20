@@ -290,3 +290,97 @@ def clarify_prompt(question: str, candidates: Sequence[Hit]) -> str:
         "specific' -- name the actual options. List them in `options` too.\n\n"
         "Respond with JSON matching the required schema."
     )
+
+
+# ---------------------------------------------------------------------------
+#  Sufficiency judging, decomposition, rewriting
+# ---------------------------------------------------------------------------
+JUDGE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "sufficient": {"type": "boolean"},
+        "missing": {"type": "string"},
+        "is_multi_part": {"type": "boolean"},
+    },
+    "required": ["sufficient", "missing", "is_multi_part"],
+}
+
+
+def judge_prompt(question: str, hits: Sequence[Hit]) -> str:
+    """Ask whether the retrieved passages can actually answer the question.
+
+    Runs on the VOLUME ladder. A judgement is a cheap call and there are two to four
+    of them per turn; routing them through synthesis models would exhaust reasoning
+    quota in about four turns and the failure would land on answer generation.
+    """
+    listing = "\n".join(
+        f"[{h.chunk_id}] ({h.source_label})\n{h.text.strip()[:900]}"
+        for h in hits
+    )
+    return (
+        "Decide whether these passages contain enough to answer the question. Do not "
+        "answer it.\n\n"
+        "Judge only what is present. You have background knowledge about these "
+        "papers; ignore it entirely. If the passages are about the right topic but "
+        "the WRONG PAPER, that is not sufficient.\n\n"
+        "Set `is_multi_part` true if the question asks about two or more distinct "
+        "things that would need separate evidence -- for example comparing two "
+        "papers, or asking how one method extends another.\n\n"
+        f"QUESTION: {question}\n\n"
+        f"--- PASSAGES ---\n{listing}\n--- END PASSAGES ---\n\n"
+        "If insufficient, say concisely in `missing` what evidence is absent.\n\n"
+        "Respond with JSON matching the required schema."
+    )
+
+
+DECOMPOSE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "sub_questions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["sub_questions"],
+}
+
+
+def decompose_prompt(question: str, max_parts: int, vocabulary: str) -> str:
+    """Split a multi-part question into independently retrievable sub-questions.
+
+    The same vocabulary constraint as condensation applies, and for the same reason:
+    a sub-question containing an invented term retrieves the wrong documents, and the
+    error is invisible because the sub-answer still looks plausible.
+    """
+    return (
+        f"Split this question into at most {max_parts} sub-questions, each of which "
+        f"could be looked up on its own.\n\n"
+        f"Each sub-question must name its subject explicitly -- it will be retrieved "
+        f"in isolation, with no access to the original question. 'How does it "
+        f"compare?' is useless as a sub-question; 'What memory does QLoRA use?' is "
+        f"not.\n\n"
+        f"Use only words from the question itself or from this list of document "
+        f"titles:\n{vocabulary}\n\n"
+        f"Do not introduce a technical term that appears in neither. If the question "
+        f"really only asks one thing, return it unchanged as a single sub-question.\n\n"
+        f"QUESTION: {question}\n\n"
+        f"Respond with JSON matching the required schema."
+    )
+
+
+REWRITE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"rewritten": {"type": "string"}},
+    "required": ["rewritten"],
+}
+
+
+def rewrite_prompt(question: str, missing: str, vocabulary: str) -> str:
+    return (
+        "A search for this question did not retrieve enough evidence. Rewrite it to "
+        "retrieve better.\n\n"
+        f"QUESTION: {question}\n"
+        f"WHAT WAS MISSING: {missing}\n\n"
+        f"Use only words from the question or from these document titles:\n"
+        f"{vocabulary}\n\n"
+        "Prefer the concrete terms a paper would actually use over general ones. Do "
+        "not add a term that appears in neither list.\n\n"
+        "Respond with JSON matching the required schema."
+    )

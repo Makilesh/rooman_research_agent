@@ -17,7 +17,7 @@ from typing import Any, Sequence
 
 from . import answer as answer_mod
 from . import conversation, db, index as index_mod, prompts, rerank as rerank_mod
-from . import retrieve, router as router_mod, verify as verify_mod
+from . import retrieve, router as router_mod, sufficiency, verify as verify_mod
 from .config import Config
 from .retrieve import Hit
 
@@ -35,6 +35,10 @@ class TurnResult:
     resolved_refs: list[str] = field(default_factory=list)
     cache_hit: bool = False
     latency_ms: int = 0
+    trace: sufficiency.Trace | None = None
+    n_loops: int = 0
+    sub_questions: list[str] = field(default_factory=list)
+    exhausted: bool = False
 
     @property
     def decision(self) -> str:
@@ -117,23 +121,43 @@ def run_turn(
     if fingerprint:
         cached = conversation.cache_lookup(conn, cfg, fingerprint, qvec)
         if cached is not None:
+            restored = answer_mod.from_cached(cached["answer"])
             return TurnResult(
                 session_id, ord_, raw_text, condensed,
-                router_mod.Route(router_mod.ANSWER, 1.0, "semantic cache hit", []),
-                None, None, cache_hit=True,
+                router_mod.Route(router_mod.ANSWER, 1.0,
+                                 f"semantic cache hit (cos {cached['score']:.4f})", []),
+                restored, None, cache_hit=True,
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
 
-    # -- retrieve ----------------------------------------------------------
-    dense = retrieve.dense_search(conn, qvec, vectors, cfg)
-    sparse = retrieve.sparse_search(conn, query, cfg)
-    fused = retrieve.reciprocal_rank_fusion(dense, sparse, cfg)
-    reranked = rerank_mod.rerank(reranker, query, fused, cfg)
+    # -- retrieve, judge, act again if the evidence is thin -----------------
+    loop_result = sufficiency.gather_evidence(
+        cfg, conn, client, models, query, provider=provider)
+    reranked = loop_result.hits
 
     # A passage the user explicitly pointed at belongs in context whatever the
     # reranker thinks of it -- they have already told us it is relevant.
     reranked = _pin_referenced(conn, reranked, refs, cfg)
     reranked = router_mod.apply_diversity_guard(cfg, reranked)
+
+    if loop_result.exhausted:
+        # The loop tried everything available and the evidence is still thin.
+        # Abstaining here is the honest outcome, and it is distinguishable in the
+        # ledger from a refusal made on the score alone.
+        _persist_refuse(conn, session_id, ord_ + 1, raw_text, condensed,
+                        router_mod.Route(router_mod.REFUSE,
+                                         max((h.rerank_score or 0.0 for h in reranked),
+                                             default=0.0),
+                                         "the retrieval loop was exhausted without "
+                                         "finding sufficient evidence", []))
+        return TurnResult(
+            session_id, ord_, raw_text, condensed,
+            router_mod.Route(router_mod.REFUSE, 0.0,
+                             "retrieval loop exhausted without sufficient evidence",
+                             []),
+            None, None, [], refs, False,
+            int((time.monotonic() - started) * 1000),
+            loop_result.trace, loop_result.loops, loop_result.sub_questions, True)
 
     # -- route -------------------------------------------------------------
     route = router_mod.route(cfg, reranked)
@@ -145,12 +169,17 @@ def run_turn(
                          question)
         return TurnResult(session_id, ord_, raw_text, condensed, route, None,
                           question, options, refs, False,
-                          int((time.monotonic() - started) * 1000))
+                          int((time.monotonic() - started) * 1000),
+                          loop_result.trace, loop_result.loops,
+                          loop_result.sub_questions)
 
     if route.decision == router_mod.REFUSE:
         _persist_refuse(conn, session_id, ord_ + 1, raw_text, condensed, route)
         return TurnResult(session_id, ord_, raw_text, condensed, route, None, None,
-                          [], refs, False, int((time.monotonic() - started) * 1000))
+                          [], refs, False,
+                          int((time.monotonic() - started) * 1000),
+                          loop_result.trace, loop_result.loops,
+                          loop_result.sub_questions)
 
     # -- answer ------------------------------------------------------------
     context = retrieve.fit_context_budget(
@@ -161,7 +190,8 @@ def run_turn(
     result = verify_mod.verify_answer(cfg, reranker, result)
 
     decision = "abstain" if result.is_refusal else "answer"
-    turn_id = answer_mod.persist(conn, result, session_id, ord_ + 1, route=decision)
+    turn_id = answer_mod.persist(conn, result, session_id, ord_ + 1, route=decision,
+                                 n_loops=loop_result.loops)
     result = replace(result, turn_id=turn_id)
 
     if fingerprint and not result.is_refusal:
@@ -171,7 +201,9 @@ def run_turn(
                                  report.answer_to_dict(result))
 
     return TurnResult(session_id, ord_, raw_text, condensed, route, result, None,
-                      [], refs, False, int((time.monotonic() - started) * 1000))
+                      [], refs, False, int((time.monotonic() - started) * 1000),
+                      loop_result.trace, loop_result.loops,
+                      loop_result.sub_questions)
 
 
 # ---------------------------------------------------------------------------

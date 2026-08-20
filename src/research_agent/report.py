@@ -301,7 +301,8 @@ def answer_to_dict(answer) -> dict:
         "sources": [
             {"chunk_id": h.chunk_id, "doc_id": h.doc_id, "title": h.title,
              "page_start": h.page_start, "page_end": h.page_end,
-             "section": h.section, "rerank_score": h.rerank_score}
+             "section": h.section, "rerank_score": h.rerank_score,
+             "text": h.text}
             for h in answer.hits
         ],
         "provider": answer.provider,

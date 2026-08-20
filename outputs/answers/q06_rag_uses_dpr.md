@@ -10,7 +10,7 @@ We build RAG models where the parametric memory is a pre-trained seq2seq transfo
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 5562 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.9849
 - Sentence verification: verified 2
