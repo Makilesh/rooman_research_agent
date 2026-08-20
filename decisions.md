@@ -1641,3 +1641,111 @@ model, substring matching, and demanding `expected_facts`. Papers-per-multi-hop 
 1.00 means the headline multi-hop capability is still unproven.
 **README line:** "Zero invented citations and 4/4 abstention across every run — those
 hold structurally, not by good behaviour on the day."
+
+---
+
+## D-135 · Greedy decoding, and the warm-up call that makes it actually deterministic
+**Date:** 2026-08-20
+**Context:** D-132 recorded that several measurements moved between runs with no code
+change, and that this nearly caused a threshold to be tuned in the wrong direction.
+**Decision:** `temperature = 0` and a fixed `seed` on every local call, both included
+in the disk-cache key, plus one throwaway warm-up call before any measurement begins.
+
+**The warm-up is not superstition — it was measured.** Six consecutive identical
+greedy calls after a cold model load:
+
+```
+1. e803d99d385c   <- differs
+2. b12bd5f2c7ad
+3. b12bd5f2c7ad
+4. b12bd5f2c7ad ... 6/6 agree from call 2 onward
+```
+
+The **first** call after a load returns different text from every subsequent identical
+call, which then agree with each other completely. One call is enough to make an
+evaluation irreproducible, so it is now spent deliberately and discarded rather than
+landing on the first question of the run.
+
+**Verified end to end.** Two full evaluation runs with `.cache/llm` deleted between
+them — so the model regenerated every answer from scratch — produced **byte-identical
+reports apart from wall-clock latency.** Every sentence count, verification status,
+paper count, fact-coverage score, loop count and route decision matched.
+
+**Decoding parameters are part of the cache key.** Without that, changing the
+temperature would silently serve answers generated under the old one, which is a
+subtle way to make a comparison meaningless.
+
+**It also improved the numbers, which was not the goal.** Sampling was costing
+accuracy, not just reproducibility: fact coverage 0.486 -> **0.660**, single-turn
+route accuracy 0.833 -> **0.917**, condensation drift 1/13 -> **0/13**.
+**Consequence:** every generation metric in `outputs/eval_report.md` can now be
+reproduced by re-running the command, and the "single-run observation" caveat that
+D-132 attached to all of them is retired. D-132 stays in the log as the record of why
+this was built.
+**Evidence:** the six-call trace above; the two-run diff.
+**README line:** "Evaluation runs greedily with a fixed seed and a discarded warm-up
+call, because the first generation after a model load is not reproducible — two runs
+with the cache cleared now produce identical reports."
+
+---
+
+## D-136 · The sufficiency judge now fires on every question
+**Date:** 2026-08-20
+**Observed:** after the D-131 judge strengthening, all twelve questions report
+`loops = 2` — the judge calls the evidence insufficient on the first pass every time,
+so every question runs the full loop including relaxation.
+**Is it wrong?** Not in outcome: single-turn route accuracy is 0.917, abstention is
+4/4, and citation precision is 0.882. The loop is finding good evidence.
+**But it is not free.** p50 latency is ~14.6s where a single pass was ~4s, and each
+question now costs a judge call plus a rewrite or decomposition on the volume ladder.
+On Ollama that is only time; on Gemini it would be roughly three times the volume-rung
+consumption per question.
+**Reading:** the judge prompt is now strict enough that "sufficient" is nearly
+unreachable on a first pass. A judge that always says no carries little information —
+it has become an unconditional second retrieval rather than a decision.
+**Decision:** record it rather than re-tune. Re-tuning the judge to be less strict
+risks reintroducing exactly the attribution failure D-119 and D-131 were built to fix,
+and the current behaviour is correct-but-expensive rather than wrong.
+**What to measure before changing it:** run with `max_retrieval_loops = 0` and compare
+route accuracy and fact coverage. If a single pass matches, the judge is pure cost. If
+it does not, the loop is earning its latency. That measurement is not yet done.
+**Evidence:** `loops = 2` on all twelve rows of `outputs/eval_report.md` section 2.
+**README line:** "The sufficiency judge currently rejects the first retrieval on every
+question, which makes the loop an unconditional second pass — correct in outcome,
+roughly 3x the latency, and flagged rather than tuned away."
+
+---
+
+## D-137 · Final measured results, Phase 6 (reproducible)
+**Date:** 2026-08-20
+**Provider:** Ollama `llama3.1:8b`, greedy, fixed seed. **Zero Gemini calls have been
+made at any point in this build.** The user deferred the Gemini comparison.
+
+| Metric | Value | LLM-dependent |
+|---|---:|---|
+| Recall@5 — hybrid + rerank | 0.646 [0.42, 0.88] | no |
+| Recall@5 — hybrid / dense / sparse | 0.583 / 0.479 / 0.479 | no |
+| **Citation precision** | **0.882** | yes |
+| **Abstention accuracy** | **1.000 (4/4)** | yes |
+| **Invented citation ids** | **0** | yes |
+| **Refusals carrying citations** | **0** | yes |
+| Fact coverage (mean) | 0.660 | yes |
+| Route accuracy — single-turn | 0.917 (11/12) | yes |
+| Route accuracy — conversational | 10/13 | yes |
+| **Condensation drift rate** | **0/13** | yes |
+| Papers per multi-hop answer | 1.00 | yes |
+| p50 / p95 latency | 14.6s / 18.6s | yes |
+
+**Reproducible:** two runs with the cache cleared produced identical values for every
+row above except latency.
+
+**The strongest results are the structural ones.** Zero invented citation ids and zero
+refusals carrying citations hold because `answer.py` enforces them, not because the
+model behaved. 4/4 abstention has held across every run of the project.
+
+**The weakest, named plainly.** Papers-per-multi-hop is 1.00: the headline multi-hop
+capability is still unproven, and the one run that produced a genuine two-paper answer
+did not reproduce. `q11` remains the single route failure, diagnosed at Step 6 as a
+retrieval problem (0.00 Recall@5 on every configuration) rather than a synthesis one.
+**README line:** "Every generation number is reproducible: two runs with the cache
+cleared produce identical reports."
