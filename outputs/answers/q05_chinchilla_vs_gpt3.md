@@ -9,7 +9,7 @@ For every doubling of model size the number of training tokens should also be do
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 7014 ms
+- Latency: 0 ms
 - Passages in context: 2
 - Top rerank score: 0.9941
 - Sentence verification: verified 3

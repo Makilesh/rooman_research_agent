@@ -10,7 +10,7 @@ Our experiments show that using triplet loss does not affect the results much.[^
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 6719 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.9905
 - Sentence verification: verified 3

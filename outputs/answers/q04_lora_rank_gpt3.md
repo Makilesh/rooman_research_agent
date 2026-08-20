@@ -10,7 +10,7 @@ We set a parameter budget of 18M (roughly 35MB if stored in FP16) on GPT-3 175B,
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 6343 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.9849
 - Sentence verification: verified 2

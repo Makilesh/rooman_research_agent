@@ -9,6 +9,6 @@ _No citations are given, because there is nothing in the corpus to cite. This is
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 3295 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.8287

@@ -11,7 +11,7 @@ The NormalFloat (NF) data type builds on Quantile Quantization which is an infor
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 12750 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.9895
 - Sentence verification: verified 5

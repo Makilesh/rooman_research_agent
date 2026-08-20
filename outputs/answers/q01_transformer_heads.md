@@ -10,7 +10,7 @@ In this work we employ h = 8 parallel attention layers, or heads.[^1][^2] For ea
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 4609 ms
+- Latency: 0 ms
 - Passages in context: 3
 - Top rerank score: 0.9612
 - Sentence verification: verified 2
