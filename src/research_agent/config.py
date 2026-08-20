@@ -167,39 +167,43 @@ class Config:
         """Build a Config from the environment, then validate its invariants."""
         load_dotenv(REPO_ROOT / ".env", override=False)
 
-        def env_str(name: str, default: str) -> str:
-            return os.getenv(name, default)
+        # `slots=True` replaces class attributes with slot descriptors, so `cls.field`
+        # is NOT the default value. Read defaults off the dataclass metadata instead.
+        defaults = {f.name: f.default for f in fields(cls)}
 
-        def env_float(name: str, default: float) -> float:
-            raw = os.getenv(name)
-            return default if raw is None else float(raw)
+        def env_str(env_name: str, field_name: str) -> str:
+            return os.getenv(env_name, defaults[field_name])  # type: ignore[arg-type]
 
-        def env_int(name: str, default: int) -> int:
-            raw = os.getenv(name)
-            return default if raw is None else int(raw)
+        def env_float(env_name: str, field_name: str) -> float:
+            raw = os.getenv(env_name)
+            return defaults[field_name] if raw is None else float(raw)  # type: ignore[return-value]
 
-        def env_bool(name: str, default: bool) -> bool:
-            raw = os.getenv(name)
+        def env_int(env_name: str, field_name: str) -> int:
+            raw = os.getenv(env_name)
+            return defaults[field_name] if raw is None else int(raw)  # type: ignore[return-value]
+
+        def env_bool(env_name: str, field_name: str) -> bool:
+            raw = os.getenv(env_name)
             if raw is None:
-                return default
+                return defaults[field_name]  # type: ignore[return-value]
             return raw.strip().lower() in {"1", "true", "yes", "on"}
 
         cfg = cls(
-            provider=env_str("PROVIDER", cls.provider),  # type: ignore[arg-type]
-            ollama_host=env_str("OLLAMA_HOST", cls.ollama_host),
-            ollama_model=env_str("OLLAMA_MODEL", cls.ollama_model),
-            ollama_model_large=env_str("OLLAMA_MODEL_LARGE", cls.ollama_model_large),
-            offload_mode=env_str("OFFLOAD_MODE", cls.offload_mode),  # type: ignore[arg-type]
-            embed_device=env_str("EMBED_DEVICE", cls.embed_device),
-            require_cuda=env_bool("REQUIRE_CUDA", cls.require_cuda),
-            tau_high=env_float("TAU_HIGH", cls.tau_high),
-            tau_low=env_float("TAU_LOW", cls.tau_low),
-            tau_verify=env_float("TAU_VERIFY", cls.tau_verify),
+            provider=env_str("PROVIDER", "provider"),  # type: ignore[arg-type]
+            ollama_host=env_str("OLLAMA_HOST", "ollama_host"),
+            ollama_model=env_str("OLLAMA_MODEL", "ollama_model"),
+            ollama_model_large=env_str("OLLAMA_MODEL_LARGE", "ollama_model_large"),
+            offload_mode=env_str("OFFLOAD_MODE", "offload_mode"),  # type: ignore[arg-type]
+            embed_device=env_str("EMBED_DEVICE", "embed_device"),
+            require_cuda=env_bool("REQUIRE_CUDA", "require_cuda"),
+            tau_high=env_float("TAU_HIGH", "tau_high"),
+            tau_low=env_float("TAU_LOW", "tau_low"),
+            tau_verify=env_float("TAU_VERIFY", "tau_verify"),
             thresholds_are_measured=env_bool(
-                "THRESHOLDS_ARE_MEASURED", cls.thresholds_are_measured
+                "THRESHOLDS_ARE_MEASURED", "thresholds_are_measured"
             ),
-            log_level=env_str("LOG_LEVEL", cls.log_level),
-            gemini_max_keys=env_int("GEMINI_MAX_KEYS", cls.gemini_max_keys),
+            log_level=env_str("LOG_LEVEL", "log_level"),
+            gemini_max_keys=env_int("GEMINI_MAX_KEYS", "gemini_max_keys"),
             **overrides,  # type: ignore[arg-type]
         )
         cfg.validate()
