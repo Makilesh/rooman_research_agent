@@ -34,6 +34,69 @@ VERIFIED = "verified"
 REPAIRED = "repaired"
 UNVERIFIED = "unverified"
 
+# Content tokens shared between a sentence and its passage, as a fraction of the
+# sentence. A grounded sentence either quotes its source or paraphrases it closely,
+# and both leave heavy lexical traces.
+LEXICAL_FLOOR = 0.70
+# Longest run of consecutive sentence tokens found verbatim in the passage. Five is
+# long enough that matching by coincidence is implausible for technical prose.
+NGRAM_FLOOR = 5
+
+_STOP = frozenset("""
+a an the of for to in on at by with from is are was were be been being do does did
+and or but if then than that this these those it its as into about we our us they
+their can could should would may might will shall not no other more most such using
+use used than which who whom whose how why when where each any all both same so
+""".split())
+
+
+def _content_tokens(text: str) -> list[str]:
+    import re
+
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _STOP]
+
+
+def lexical_support(sentence: str, passage: str) -> float:
+    """Deterministic containment score in [0, 1]. No model, no quota, no randomness.
+
+    This exists because measurement showed the cross-encoder cannot be trusted for
+    this job on its own. A sentence lifted **verbatim** from its cited passage scored
+    0.3438, while a passage that did *not* contain it scored 0.6218. That is not a
+    tuning problem: the cross-encoder scores topical relevance between a *query* and a
+    *document*, and "does this long passage contain this short statement" is a
+    different question that it answers badly.
+
+    Lexical overlap answers exactly that question, and it answers it perfectly for the
+    case that dominates in practice -- a grounded model quotes or closely paraphrases
+    its source. The cross-encoder is kept for genuine paraphrase, where lexical
+    overlap is weak but the claim is still supported. A sentence passes on either.
+    """
+    s_tokens = _content_tokens(sentence)
+    if not s_tokens:
+        return 0.0
+    p_tokens = _content_tokens(passage)
+    p_set = set(p_tokens)
+
+    coverage = sum(1 for t in s_tokens if t in p_set) / len(s_tokens)
+
+    # Longest contiguous run of sentence tokens appearing in order in the passage.
+    longest = run = 0
+    positions = {t: i for i, t in enumerate(p_tokens)}
+    prev = None
+    for t in s_tokens:
+        idx = positions.get(t)
+        if idx is not None and prev is not None and idx == prev + 1:
+            run += 1
+        elif idx is not None:
+            run = 1
+        else:
+            run = 0
+        longest = max(longest, run)
+        prev = idx
+
+    # A long verbatim run is decisive on its own; otherwise fall back to coverage.
+    return 1.0 if longest >= NGRAM_FLOOR else coverage
+
 
 def verify_answer(cfg: Config, reranker, answer: Answer) -> Answer:
     """Score every (sentence, cited chunk) pair and label each sentence.
@@ -51,7 +114,7 @@ def verify_answer(cfg: Config, reranker, answer: Answer) -> Answer:
     cfg.require_measured_thresholds()
 
     pairs: list[tuple[str, str]] = []
-    index: list[tuple[int, str]] = []
+    index: list[tuple[int, str, str, str]] = []
     for s in answer.sentences:
         for cid in s.chunk_ids:
             hit = answer.hit_by_id(cid)
@@ -61,13 +124,20 @@ def verify_answer(cfg: Config, reranker, answer: Answer) -> Answer:
             # synthesiser's context was rendered from -- never a re-fetch or a
             # truncation.
             pairs.append((s.text, hit.text))
-            index.append((s.idx, cid))
+            index.append((s.idx, cid, hit.text, s.text))
 
     scores = score_pairs(reranker, pairs, cfg)
 
     by_sentence: dict[int, dict[str, float]] = {}
-    for (sidx, cid), score in zip(index, scores):
-        by_sentence.setdefault(sidx, {})[cid] = score
+    for (sidx, cid, passage, sentence), ce_score in zip(index, scores):
+        # A sentence counts as supported if EITHER signal says so. Lexical containment
+        # catches quotation and close paraphrase, which the cross-encoder scores
+        # badly; the cross-encoder catches genuine paraphrase, where lexical overlap
+        # is weak. Requiring both would fail almost everything that is actually true.
+        lex = lexical_support(sentence, passage)
+        by_sentence.setdefault(sidx, {})[cid] = max(
+            ce_score, lex if lex >= LEXICAL_FLOOR else 0.0
+        )
 
     verified: list[CitedSentence] = []
     for s in answer.sentences:
