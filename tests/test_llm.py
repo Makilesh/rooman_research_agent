@@ -378,7 +378,56 @@ def test_offload_mode_selects_the_larger_local_model(cfg, conn, clock):
 # ---------------------------------------------------------------------------
 def test_missing_and_blank_keys_are_absent_not_errors(cfg):
     keys = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "abc", "GEMINI_API_KEY_2": "   "})
-    assert keys == {"key_1": "abc"}, "a blank key is not a key; the Ollama path needs none"
+    assert list(keys.values()) == ["abc"], (
+        "a blank key is not a key; the Ollama path needs none")
+
+
+def test_key_alias_follows_the_key_not_its_position(cfg):
+    """Quota is accounted per (model, key_alias). A positional alias hands a key's
+    consumption to whatever later occupies its slot -- observed live, where two fresh
+    keys inherited 20/20 and 18/20 RPD from their predecessors."""
+    first = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "AAA",
+                                      "GEMINI_API_KEY_2": "BBB"})
+    swapped = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "BBB",
+                                        "GEMINI_API_KEY_2": "AAA"})
+    assert set(first) == set(swapped), "moving a key between slots must not rename it"
+
+    replaced = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "AAA",
+                                         "GEMINI_API_KEY_2": "CCC"})
+    assert set(replaced) != set(first), "a genuinely new key must get a new identity"
+
+
+def test_key_alias_never_contains_the_key(cfg):
+    secret = "AQ.Ab8-super-secret-value"
+    alias = LLMClient.key_alias(secret)
+    assert secret not in alias
+    assert alias.startswith("k_") and len(alias) == 12
+
+
+def test_duplicate_keys_collapse_to_one_bucket(cfg):
+    """The same key in two slots shares one quota bucket; counting it twice would
+    double the apparent capacity."""
+    keys = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "same",
+                                     "GEMINI_API_KEY_2": "same"})
+    assert len(keys) == 1
+
+
+def test_a_rate_limited_key_rotates_rather_than_aborting(cfg, conn, clock):
+    """A 429 means the provider disagrees with the local ledger. Trust the provider
+    and rotate; aborting would waste the keys that still have capacity."""
+    def transport(model, prompt, schema, api_key, timeout_s):
+        if api_key == "spent":
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+        return json.dumps({"answer": "ok"}), 5, 5
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys={"k_spent": "spent", "k_fresh": "fresh"},
+                       gemini=GeminiProvider(transport=transport), now=clock)
+    out = client.complete("p", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.key_alias == "k_fresh"
+    assert "k_spent" not in client.disabled_keys, (
+        "rate limiting is temporary; the key must not be permanently disabled")
 
 
 def test_budget_reports_every_rung_and_reflects_consumption(cfg, conn, clock):

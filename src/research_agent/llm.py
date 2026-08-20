@@ -65,6 +65,22 @@ _TRANSIENT_ERRORS = (
 )
 
 
+_RATE_LIMIT_ERRORS = ("429", "resource_exhausted", "rate limit", "quota exceeded")
+
+
+def is_rate_limited(exc: Exception) -> bool:
+    """The provider says this (model, key) is out of quota right now.
+
+    Distinct from both other classes. Waiting fixes it, unlike a 403; but retrying
+    the SAME rung immediately does not, unlike a dropped connection. The correct
+    response is to rotate -- next key, then next rung -- which is what the limiter
+    is meant to have prevented ever being necessary. Reaching here means the local
+    accounting and the provider's disagree, so the provider wins.
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _RATE_LIMIT_ERRORS)
+
+
 def is_transient_error(exc: Exception) -> bool:
     text = f"{type(exc).__name__} {exc}".lower()
     return any(marker in text for marker in _TRANSIENT_ERRORS)
@@ -448,16 +464,35 @@ class LLMClient:
 
     # -- keys ---------------------------------------------------------------
     @staticmethod
+    def key_alias(key: str) -> str:
+        """A stable, non-secret identifier for a key.
+
+        Derived from the key material, never from its position in the env file, and
+        never containing any of the key itself.
+
+        The positional scheme this replaces was actively wrong. Quota is accounted
+        per `(model, key_alias)`, so moving a key from slot 3 to slot 1 handed its
+        consumption to whatever now sits in slot 3. Observed exactly that: two fresh
+        keys inherited 20/20 and 18/20 RPD from their predecessors while the keys
+        that had actually spent it showed 2/20. The limiter would then refuse the
+        fresh quota and over-spend the drained quota -- both directions wrong at once.
+        """
+        return "k_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:10]
+
+    @staticmethod
     def load_keys(cfg: Config, environ: dict[str, str]) -> dict[str, str]:
         """Read GEMINI_API_KEY_1..N. Absent keys are simply absent -- not an error.
 
         The Ollama path must work with no key at all, so this never raises.
+        Duplicate keys across slots collapse to one entry, which is correct: they
+        share one quota bucket, and counting them twice would double the apparent
+        capacity.
         """
         keys: dict[str, str] = {}
         for i in range(1, cfg.gemini_max_keys + 1):
             value = (environ.get(f"{cfg.gemini_key_env_prefix}{i}") or "").strip()
             if value:
-                keys[f"key_{i}"] = value
+                keys[LLMClient.key_alias(value)] = value
         return keys
 
     # -- the call -----------------------------------------------------------
@@ -536,6 +571,7 @@ class LLMClient:
 
         tried: list[tuple[str, str]] = []
         transient: list[str] = []
+        rate_limited: list[str] = []
         for rung in rungs:
             sha = DiskCache.key(rung.model, prompt, params)
             hit = self.cache.get(sha)
@@ -576,6 +612,11 @@ class LLMClient:
                     # key. Move to the next key or rung; the loop is bounded, so a
                     # persistent outage still terminates in QuotaExhausted rather
                     # than spinning.
+                    if is_rate_limited(exc):
+                        # The provider disagrees with the local ledger. Trust it and
+                        # rotate; the mismatch is recorded in the row's error.
+                        rate_limited.append(f"{rung.model}/{alias}")
+                        continue
                     if is_transient_error(exc):
                         transient.append(f"{rung.model}/{alias}: {exc}")
                         continue
