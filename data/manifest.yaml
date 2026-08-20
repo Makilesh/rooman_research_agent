@@ -1,0 +1,108 @@
+# The reproducible corpus artifact.
+#
+# The PDFs themselves are gitignored: this file plus `research-agent fetch` rebuilds
+# the corpus exactly, keeps the repository small, and avoids redistributing anyone
+# else's paper (decisions.md D-006).
+#
+# arxiv_id is VERSION-PINNED. A bare id resolves to the latest revision, so an
+# unpinned corpus can silently change underneath the gold labels: a new revision
+# means a new sha256, new chunk ids, and an evaluation scored against chunks that no
+# longer say what they said when they were labelled (decisions.md D-109).
+#
+# title / first_author / published were read from the arXiv API on 2026-08-20, never
+# written from memory. `research-agent fetch --audit` re-checks them against the API.
+
+version: 1
+fetched_metadata_on: "2026-08-20"
+
+documents:
+  - doc_id: attention
+    arxiv_id: 1706.03762v7
+    title: "Attention Is All You Need"
+    first_author: "Ashish Vaswani"
+    published: "2017-06-12"
+    role: "Architectural bedrock; precise, checkable hyperparameters."
+
+  - doc_id: bert
+    arxiv_id: 1810.04805v2
+    title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    first_author: "Jacob Devlin"
+    published: "2018-10-11"
+    role: "Contrasts with the transformer paper on pretraining objective."
+
+  - doc_id: gpt3
+    arxiv_id: 2005.14165v4
+    title: "Language Models are Few-Shot Learners"
+    first_author: "Tom B. Brown"
+    published: "2020-05-28"
+    role: "Scale claims and large results tables; pairs against Chinchilla."
+
+  - doc_id: dpr
+    arxiv_id: 2004.04906v3
+    title: "Dense Passage Retrieval for Open-Domain Question Answering"
+    first_author: "Vladimir Karpukhin"
+    published: "2020-04-10"
+    role: "The retriever that RAG builds on."
+
+  - doc_id: rag
+    arxiv_id: 2005.11401v4
+    title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    first_author: "Patrick Lewis"
+    published: "2020-05-22"
+    role: "Directly self-referential to what this agent is."
+
+  - doc_id: lora
+    arxiv_id: 2106.09685v2
+    title: "LoRA: Low-Rank Adaptation of Large Language Models"
+    first_author: "Edward J. Hu"
+    published: "2021-06-17"
+    role: "Pairs with QLoRA; rank decomposition. Source of the adjacent-paper trap."
+
+  - doc_id: cot
+    arxiv_id: 2201.11903v6
+    title: "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+    first_author: "Jason Wei"
+    published: "2022-01-28"
+    role: "Reasoning thread."
+
+  - doc_id: qlora
+    arxiv_id: 2305.14314v1
+    title: "QLoRA: Efficient Finetuning of Quantized LLMs"
+    first_author: "Tim Dettmers"
+    published: "2023-05-23"
+    role: "Extends LoRA; NF4 and memory figures. The 'quantised version' in scenario A."
+
+  - doc_id: chinchilla
+    arxiv_id: 2203.15556v1
+    title: "Training Compute-Optimal Large Language Models"
+    first_author: "Jordan Hoffmann"
+    published: "2022-03-29"
+    role: "Scaling-law numbers; contrasts with GPT-3."
+
+  - doc_id: instructgpt
+    arxiv_id: 2203.02155v1
+    title: "Training language models to follow instructions with human feedback"
+    first_author: "Long Ouyang"
+    published: "2022-03-04"
+    role: "RLHF; pairs with DPO."
+
+  - doc_id: dpo
+    arxiv_id: 2305.18290v3
+    title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model"
+    first_author: "Rafael Rafailov"
+    published: "2023-05-29"
+    role: "Defined against InstructGPT -- ideal multi-hop material."
+
+  - doc_id: react
+    arxiv_id: 2210.03629v3
+    title: "ReAct: Synergizing Reasoning and Acting in Language Models"
+    first_author: "Shunyu Yao"
+    published: "2022-10-06"
+    role: "Agent thread; ties to this project's own retrieval loop."
+
+  - doc_id: selfrag
+    arxiv_id: 2310.11511v1
+    title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+    first_author: "Akari Asai"
+    published: "2023-10-17"
+    role: "Extends RAG; adaptive retrieval."

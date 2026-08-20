@@ -14,7 +14,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import db
+from . import corpus, db
+from . import ingest as ingest_mod
 from .config import Config
 from .llm import LLMClient, OllamaProvider
 
@@ -224,6 +225,147 @@ def budget() -> None:
             "\n[dim]No Gemini key configured, so the figures above are limits rather"
             " than live balances.\nThe Ollama path is unlimited and needs no key.[/dim]"
         )
+
+
+@app.command()
+def fetch(
+    audit: bool = typer.Option(
+        False, "--audit", help="Re-check manifest titles and authors against the arXiv API."
+    ),
+) -> None:
+    """Download every manifest paper from arXiv, politely and reproducibly."""
+    cfg = Config.load()
+    entries = corpus.load_manifest(cfg)
+    console.print(f"Manifest: {len(entries)} documents -> {cfg.sources_dir}\n")
+
+    if audit:
+        console.rule("[bold]Manifest audit against the live arXiv API")
+        live = {m["arxiv_id"]: m for m in corpus.fetch_metadata(
+            [e.arxiv_id for e in entries], cfg.arxiv_user_agent, cfg.fetch_timeout_s
+        )}
+        mismatches = 0
+        for e in entries:
+            m = live.get(e.arxiv_id)
+            if m is None:
+                _fail(e.arxiv_id, "not returned by the API")
+                mismatches += 1
+            elif m["title"] != e.title or m["first_author"] != e.first_author:
+                _fail(e.arxiv_id, f"manifest says {e.title!r} / {e.first_author!r}; "
+                                  f"API says {m['title']!r} / {m['first_author']!r}")
+                mismatches += 1
+            else:
+                _ok(e.arxiv_id, f"{e.first_author} — {e.title[:52]}")
+        console.print()
+        if mismatches:
+            raise typer.Exit(1)
+
+    results = list(corpus.fetch_corpus(cfg, entries, on_event=console.print))
+
+    console.print()
+    t = Table(show_edge=False)
+    for col, just in (("doc_id", "left"), ("arxiv id", "left"), ("bytes", "right"),
+                      ("sha256 (first 16)", "left"), ("state", "left")):
+        t.add_column(col, justify=just)  # type: ignore[arg-type]
+    for r in results:
+        t.add_row(r.entry.doc_id, r.entry.arxiv_id, f"{r.n_bytes:,}",
+                  r.sha256[:16], "cached" if r.skipped else "downloaded")
+    console.print(t)
+
+    empty = [r for r in results if r.n_bytes == 0]
+    if empty:
+        _fail(f"{len(empty)} zero-byte file(s)", ", ".join(r.entry.arxiv_id for r in empty))
+        raise typer.Exit(1)
+    _ok(f"{len(results)} document(s) present", "re-running this command is a no-op")
+
+
+@app.command()
+def ingest(
+    page: int = typer.Option(3, "--page", help="Which page to dump for the reading-order gate."),
+    chars: int = typer.Option(600, "--chars", help="How much of that page to print."),
+    quiet: bool = typer.Option(False, "--quiet", help="Skip the text dump."),
+) -> None:
+    """Extract text and page metadata from every fetched source.
+
+    Prints the first N characters of one page per paper. That dump is the gate, and
+    it cannot be automated away: interleaved columns produce text that passes every
+    automated check while being semantically destroyed. A human has to read it.
+    """
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    entries = corpus.load_manifest(cfg)
+
+    stats = []
+    for entry in entries:
+        path = cfg.sources_dir / entry.filename
+        if not path.exists():
+            _fail(entry.doc_id, f"{path.name} missing — run `fetch` first")
+            raise typer.Exit(1)
+
+        pages = ingest_mod.extract(path)
+        digest = corpus.sha256_file(path)
+        profile = ingest_mod.column_profile(pages)
+
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", (entry.doc_id,))
+        db.insert(conn, "documents", {
+            "doc_id": entry.doc_id, "title": entry.title, "arxiv_id": entry.arxiv_id,
+            "path": str(path), "source_url": entry.source_url, "sha256": digest,
+            "n_pages": len(pages),
+            "extracted_chars": sum(len(p.text) for p in pages),
+        })
+        db.insert_many(conn, "pages", [
+            {"doc_id": entry.doc_id, "page_no": p.number, "n_columns": p.n_columns,
+             "n_blocks": p.n_blocks, "text": p.text}
+            for p in pages
+        ])
+        conn.commit()
+        stats.append((entry, pages, profile, digest))
+
+    t = Table(show_edge=False)
+    for col, just in (("doc_id", "left"), ("pages", "right"), ("chars", "right"),
+                      ("chars/page", "right"), ("layout", "left"), ("empty pages", "right")):
+        t.add_column(col, justify=just)  # type: ignore[arg-type]
+    for entry, pages, profile, _ in stats:
+        n_two = profile.get(2, 0)
+        layout = (f"TWO-COLUMN ({n_two}/{len(pages)})" if n_two > len(pages) / 2
+                  else f"single ({profile.get(1, 0)}/{len(pages)})"
+                       + (f", {n_two} mixed" if n_two else ""))
+        total = sum(len(p.text) for p in pages)
+        empty = sum(1 for p in pages if len(p.text) < 40)
+        t.add_row(entry.doc_id, str(len(pages)), f"{total:,}",
+                  f"{total // max(len(pages), 1):,}", layout, str(empty) if empty else "-")
+    console.print(t)
+
+    # -- automated assertions ------------------------------------------------
+    console.print()
+    problems = 0
+    for entry, pages, _, _ in stats:
+        blank = [p.number for p in pages if len(p.text) < 40]
+        if len(blank) > len(pages) * 0.2:
+            _fail(entry.doc_id, f"{len(blank)} near-empty pages — extraction may have failed")
+            problems += 1
+    if problems == 0:
+        _ok("every document extracted text on the large majority of its pages")
+
+    if quiet:
+        return
+
+    console.print()
+    console.rule(f"[bold]READING-ORDER GATE — page {page}, first {chars} characters")
+    console.print(
+        "[dim]Read these. Interleaved columns look fluent and are semantically "
+        "destroyed.\nWhat you are checking: does each passage continue into the next, "
+        "or does it jump mid-sentence?[/dim]\n"
+    )
+    for entry, pages, _, _ in stats:
+        target = next((p for p in pages if p.number == page), None)
+        if target is None:
+            _warn(entry.doc_id, f"has no page {page}")
+            continue
+        console.print(f"[bold cyan]── {entry.doc_id} · {entry.arxiv_id} · "
+                      f"page {page} · read as {target.n_columns} column(s) ──[/bold cyan]")
+        console.print(target.text[:chars].replace("\n", " ⏎ "))
+        console.print()
 
 
 @app.command("db")

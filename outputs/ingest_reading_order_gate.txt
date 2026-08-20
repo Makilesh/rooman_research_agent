@@ -1,0 +1,162 @@
+ doc_id      │ pages │   chars │ chars/page │ layout             │ empty pages 
+─────────────┼───────┼─────────┼────────────┼────────────────────┼─────────────
+ attention   │    15 │  39,898 │      2,659 │ single (15/15)     │           - 
+ bert        │    16 │  63,917 │      3,994 │ TWO-COLUMN (16/16) │           - 
+ gpt3        │    75 │ 237,762 │      3,170 │ single (75/75)     │           - 
+ dpr         │    13 │  55,880 │      4,298 │ TWO-COLUMN (12/13) │           - 
+ rag         │    19 │  69,317 │      3,648 │ single (19/19)     │           - 
+ lora        │    26 │  83,125 │      3,197 │ single (26/26)     │           - 
+ cot         │    43 │ 136,218 │      3,167 │ single (43/43)     │           - 
+ qlora       │    26 │  87,680 │      3,372 │ single (25/26), 1  │           - 
+             │       │         │            │ mixed              │             
+ chinchilla  │    36 │  97,546 │      2,709 │ single (36/36)     │           - 
+ instructgpt │    68 │ 182,789 │      2,688 │ single (68/68)     │           - 
+ dpo         │    27 │  93,706 │      3,470 │ single (26/27), 1  │           - 
+             │       │         │            │ mixed              │             
+ react       │    33 │ 109,084 │      3,305 │ single (31/33), 2  │           - 
+             │       │         │            │ mixed              │             
+ selfrag     │    30 │ 105,610 │      3,520 │ single (30/30)     │           - 
+
+  OK   every document extracted text on the large majority of its pages
+
+────────────── READING-ORDER GATE — page 4, first 600 characters ──────────────
+Read these. Interleaved columns look fluent and are semantically destroyed.
+What you are checking: does each passage continue into the next, or does it 
+jump mid-sentence?
+
+── attention · 1706.03762v7 · page 4 · read as 1 column(s) ──
+Scaled Dot-Product Attention ⏎ Multi-Head Attention ⏎  ⏎ Figure 2: (left) 
+Scaled Dot-Product Attention. (right) Multi-Head Attention consists of several 
+attention layers running in parallel. ⏎  of the values, where the weight 
+assigned to each value is computed by a compatibility function of the query 
+with the corresponding key. ⏎  ⏎ 3.2.1 ⏎ Scaled Dot-Product Attention ⏎  ⏎ We 
+call our particular attention "Scaled Dot-Product Attention" (Figure 2). The 
+input consists of queries and keys of dimension dk, and values of dimension dv.
+We compute the dot products of the query with all keys, divide each by √dk, and
+a
+
+── bert · 1810.04805v2 · page 4 · read as 2 column(s) ──
+Input/Output Representations ⏎ To make BERT handle a variety of down-stream 
+tasks, our input representation is able to unambiguously represent both a 
+single sentence and a pair of sentences (e.g., ⟨Question, Answer ⟩) in one 
+token sequence. ⏎ Throughout this work, a "sentence" can be an arbitrary span 
+of contiguous text, rather than an actual linguistic sentence. A "sequence" 
+refers to the input token sequence to BERT, which may be a single sentence or 
+two sentences packed together. ⏎  ⏎ We use WordPiece embeddings (Wu et al., ⏎ 
+2016) with a 30,000 token vocabulary. The first token of every sequence is 
+
+── gpt3 · 2005.14165v4 · page 4 · read as 1 column(s) ──
+Figure 1.2: Larger models make increasingly efficient use of in-context 
+information. We show in-context learning performance on a simple task requiring
+the model to remove random symbols from a word, both with and without a natural
+language task description (see Sec. 3.9.2). The steeper "in-context learning 
+curves" for large models demonstrate improved ability to learn a task from 
+contextual information. We see qualitatively similar behavior across a wide 
+range of tasks. ⏎  sufficient to enable a human to perform a new task to at 
+least a reasonable degree of competence. Aside from pointing to a 
+
+── dpr · 2004.04906v3 · page 4 · read as 2 column(s) ──
+negative passages for each question. ⏎  ⏎ The trick of in-batch negatives has 
+been used in the full batch setting (Yih et al., 2011) and more recently for 
+mini-batch (Henderson et al., 2017; ⏎ Gillick et al., 2019). It has been shown 
+to be an effective strategy for learning a dual-encoder model that boosts the 
+number of training examples. ⏎  ⏎ 4 ⏎ Experimental Setup ⏎  ⏎ In this section, 
+we describe the data we used for experiments and the basic setup. ⏎  ⏎ 4.1 ⏎ 
+Wikipedia Data Pre-processing ⏎  ⏎ Following (Lee et al., 2019), we use the 
+English ⏎ Wikipedia dump from Dec. 20, 2018 as the source ⏎  documents for 
+answering q
+
+── rag · 2005.11401v4 · page 4 · read as 1 column(s) ──
+minimize the negative marginal log-likelihood of each target, P ⏎  j −log 
+p(yj|xj) using stochastic gradient descent with Adam [28]. Updating the 
+document encoder BERTd during training is costly as it requires the document 
+index to be periodically updated as REALM does during pre-training [20]. ⏎ We 
+do not find this step necessary for strong performance, and keep the document 
+encoder (and index) fixed, only fine-tuning the query encoder BERTq and the 
+BART generator. ⏎  ⏎ 2.5 ⏎ Decoding ⏎  ⏎ At test time, RAG-Sequence and 
+RAG-Token require different ways to approximate arg maxy p(y|x). ⏎  ⏎ RAG-Token
+⏎ The RAG-Tok
+
+── lora · 2106.09685v2 · page 4 · read as 1 column(s) ──
+Batch Size ⏎ 32 ⏎ 16 ⏎ 1 ⏎ Sequence Length ⏎ 512 ⏎ 256 ⏎ 128 ⏎ |Θ| ⏎ 0.5M ⏎ 11M
+⏎ 11M ⏎  ⏎ Fine-Tune/LoRA ⏎ 1449.4±0.8 ⏎ 338.0±0.6 ⏎ 19.8±2.7 ⏎  ⏎ AdapterL ⏎ 
+1482.0±1.0 (+2.2%) ⏎ 354.8±0.5 (+5.0%) ⏎ 23.9±2.1 (+20.7%) ⏎ AdapterH ⏎ 
+1492.2±1.0 (+3.0%) ⏎ 366.3±0.5 (+8.4%) ⏎ 25.8±2.2 (+30.3%) ⏎  ⏎ Table 1: 
+Infernece latency of a single forward pass in GPT-2 medium measured in 
+milliseconds, averaged over 100 trials. We use an NVIDIA Quadro RTX8000. "|Θ|" 
+denotes the number of trainable parameters in adapter layers. AdapterL and 
+AdapterH are two variants of adapter tuning, which we describe in Section 5.1. 
+The inference latency introduced by adapter lay
+
+── cot · 2201.11903v6 · page 4 · read as 1 column(s) ──
+Math Word Problems (free response) ⏎ Math Word Problems (multiple choice) ⏎ 
+CSQA (commonsense) ⏎  ⏎ Q: How many keystrokes are needed  to type the numbers 
+from 1 to 500? ⏎ Answer Choices: (a) 1156 (b) 1392 (c) 1480  (d) 1562 (e) 1788 
+⏎  ⏎ Q: Roger has 5 tennis balls. He buys  ⏎ 2 more cans of tennis balls. Each 
+can  has 3 tennis balls. How many tennis  balls does he have now? ⏎  ⏎ Q: Sammy
+wanted to go to where the  people were. Where might he go? ⏎ Options: (a) race 
+track (b) populated areas  (c) desert (d) apartment (e) roadblock ⏎  ⏎ A: There
+are 9 one-digit numbers  from 1 to 9. There are 90 two-digit  numbers from
+
+── qlora · 2305.14314v1 · page 4 · read as 1 column(s) ──
+Parameter Efficient Finetuning (PEFT) method, most of the memory footprint for 
+LLM finetuning comes from activation gradients and not from the learned LoRA 
+parameters. For a 7B LLaMA model trained on FLAN v2 with a batch size of 1, 
+with LoRA weights equivalent to commonly used ⏎ 0.2% of the original model 
+weights[28, 37], the LoRA input gradients have a memory footprint of 567 MB 
+while the LoRA parameters take up only 26 MB. With gradient checkpointing [9], 
+the input gradients reduce to an average of 18 MB per sequence making them more
+memory intensive than all LoRA weights combined. In comparis
+
+── chinchilla · 2203.15556v1 · page 4 · read as 1 column(s) ──
+language models, showing that the scaling with number of experts diminishes as 
+the model size increases—their approach models the loss as a function of two 
+variables: the model size and the number of experts. However, the analysis is 
+done with a fixed number of training tokens, as in Kaplan et al. (2020), 
+potentially underestimating the improvements of branching. ⏎  ⏎ Estimating 
+hyperparameters for large models. ⏎ The model size and the number of training 
+tokens are not the only two parameters to chose when selecting a language model
+and a procedure to train it. Other important factors include learn
+
+── instructgpt · 2203.02155v1 · page 4 · read as 1 column(s) ──
+lower performance on certain tasks that we may care about. We can greatly 
+reduce the performance regressions on these datasets by mixing PPO updates with
+updates that increase the log likelihood of the pretraining distribution 
+(PPO-ptx), without compromising labeler preference scores. ⏎  ⏎ Our models 
+generalize to the preferences of "held-out" labelers that did not produce any 
+training data. ⏎ To test the generalization of our models, we conduct a 
+preliminary experiment with held-out labelers, and find that they prefer 
+InstructGPT outputs to outputs from GPT-3 at about the same rate as our 
+training 
+
+── dpo · 2305.18290v3 · page 4 · read as 1 column(s) ──
+where β is a parameter controlling the deviation from the base reference policy
+πref, namely the initial SFT model πSFT. In practice, the language model policy
+πθ is also initialized to πSFT. The added constraint is important, as it 
+prevents the model from deviating too far from the distribution on which the 
+reward model is accurate, as well as maintaining the generation diversity and 
+preventing mode-collapse to single high-reward answers. Due to the discrete 
+nature of language generation, this objective is not differentiable and is 
+typically optimized with reinforcement learning. The standard
+
+── react · 2210.03629v3 · page 4 · read as 1 column(s) ──
+appear sparsely in the most relevant positions of a trajectory, so we let the 
+language model decide the asynchronous occurrence of thoughts and actions for 
+itself. ⏎  ⏎ Since decision making and reasoning capabilities are integrated 
+into a large language model, ReAct enjoys several unique features: A) Intuitive
+and easy to design: Designing ReAct prompts is straightforward as human 
+annotators just type down their thoughts in language on top of their actions 
+taken. No ad-hoc format choice, thought design, or example selection is used in
+this paper. We detail prompt design for each task in Sections 
+
+── selfrag · 2310.11511v1 · page 4 · read as 1 column(s) ──
+Type ⏎ Input ⏎ Output ⏎ Definitions ⏎  ⏎ Retrieve x / x, y ⏎ {yes, no, 
+continue} ⏎ Decides when to retrieve with R ⏎ ISREL x, d ⏎ {relevant, 
+irrelevant} d provides useful information to solve x. ⏎ ISSUP x, d, y ⏎ {fully 
+supported, partially supported, no support} ⏎  ⏎ All of the verification-worthy
+statement in y is supported by d. ⏎ ISUSE x, y ⏎ {5, 4, 3, 2, 1} y is a useful 
+response to x. ⏎  ⏎ Table 1: Four types of reflection tokens used in SELF-RAG. 
+Each type uses several tokens to represent its output values. The bottom three 
+rows are three types of Critique tokens, and the bold text indicates the most 
+desirable critique 
+
