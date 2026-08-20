@@ -179,3 +179,114 @@ def repair_prompt(sentence: str, hits: Sequence[Hit]) -> str:
         "better than dressing it up.\n\n"
         "Respond with JSON matching the required schema."
     )
+
+
+# ---------------------------------------------------------------------------
+#  Condensation
+# ---------------------------------------------------------------------------
+CONDENSE_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "standalone_query": {
+            "type": "string",
+            "description": "The follow-up rewritten so it stands alone.",
+        },
+    },
+    "required": ["standalone_query"],
+}
+
+CONDENSE_SYSTEM = """Rewrite a follow-up question so it stands alone, without the conversation.
+
+THE ONE UNBREAKABLE RULE: use only words that already appear in the conversation
+above or in the follow-up itself. Do not introduce any new noun, technical term, or
+topic word — not even one that seems obviously right or more precise.
+
+This matters more than fluency. A rewritten query that adds an invented term steers
+retrieval into documents the conversation was never about, and the resulting answer
+is confident, well-formed, and wrong.
+
+WHAT YOU SHOULD DO:
+- Replace pronouns ("it", "that", "they", "this method") with the specific thing they
+  refer to, using the words the conversation already used for it.
+- Carry forward context the follow-up assumes.
+- Keep it short. A stilted query that retrieves correctly beats an elegant one that
+  does not.
+
+WHAT YOU MUST NOT DO:
+- Invent a category, framework, or process word to make the query sound complete.
+- Add a synonym you prefer over the word the conversation used.
+- Answer the question. You are only rewriting it."""
+
+CONDENSE_EXAMPLES = """EXAMPLE:
+
+CONVERSATION:
+User: What problem does LoRA solve?
+Assistant: LoRA freezes the pretrained weights and injects trainable rank
+decomposition matrices, reducing the number of trainable parameters.
+
+FOLLOW-UP: How does the quantised version reduce memory further?
+
+{"standalone_query": "How does the quantised version of LoRA reduce memory further?"}
+
+EXAMPLE — resisting the temptation to add a word:
+
+CONVERSATION:
+User: What statuses can a request have?
+Assistant: A request can be draft, submitted, or closed.
+
+FOLLOW-UP: what about during approval?
+
+{"standalone_query": "What statuses can a request have during approval?"}
+
+Note what was NOT added: no "workflow", no "lifecycle", no "process". Those words are
+not in the conversation, so they may not appear in the query."""
+
+
+def condense_prompt(history: str, raw: str, extra_vocabulary: str = "") -> str:
+    extra = (f"\nThe user referred to these sources, so their titles and sections are "
+             f"also available vocabulary:\n{extra_vocabulary}\n"
+             if extra_vocabulary else "")
+    return (
+        f"{CONDENSE_SYSTEM}\n\n{CONDENSE_EXAMPLES}\n\n"
+        f"CONVERSATION:\n{history}\n{extra}\n"
+        f"FOLLOW-UP: {raw}\n\n"
+        f"Respond with JSON matching the required schema."
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Clarification
+# ---------------------------------------------------------------------------
+CLARIFY_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string"},
+        "options": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["question", "options"],
+}
+
+
+def clarify_prompt(question: str, candidates: Sequence[Hit]) -> str:
+    """Build a clarifying question from the passages that are actually competing.
+
+    A generic "could you clarify?" wastes the user's turn. The retrieved candidates
+    already say what the ambiguity IS -- two papers, two sections, two settings -- so
+    the question names them.
+    """
+    listing = "\n".join(
+        f"- {h.title}"
+        + (f", section {h.section}" if h.section else "")
+        + f" (p.{h.page_start})"
+        for h in candidates
+    )
+    return (
+        "A user's question is ambiguous: the sources contain several plausible but "
+        "different answers, and answering from one of them would be a guess.\n\n"
+        f"QUESTION: {question}\n\n"
+        f"COMPETING SOURCES:\n{listing}\n\n"
+        "Write one short clarifying question that names the specific alternatives, so "
+        "the user can pick. Do not ask 'could you clarify' or 'can you be more "
+        "specific' -- name the actual options. List them in `options` too.\n\n"
+        "Respond with JSON matching the required schema."
+    )
