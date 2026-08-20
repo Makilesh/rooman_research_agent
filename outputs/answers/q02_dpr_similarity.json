@@ -1,0 +1,73 @@
+{
+  "question": "What similarity function does Dense Passage Retrieval use to compare a question and a passage, and why was it chosen?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "We define the similarity between the question and the passage using the dot product of their vectors: sim(q, p) = EQ(q)⊺EP (p).",
+      "cite": [
+        "p_dpr_0001"
+      ],
+      "verify_scores": {
+        "p_dpr_0001": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "Although more expressive model forms for measuring the similarity between a question and a passage do exist, such as networks consisting of multiple layers of cross attentions, the similarity function needs to be decomposable so that the representations of the collection of passages can be precomputed.",
+      "cite": [
+        "p_dpr_0001"
+      ],
+      "verify_scores": {
+        "p_dpr_0001": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 2,
+      "text": "Most decomposable similarity functions are some transformations of Euclidean distance (L2).",
+      "cite": [
+        "p_dpr_0004"
+      ],
+      "verify_scores": {
+        "p_dpr_0004": 0.8293538093566895
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_dpr_0001",
+      "doc_id": "dpr",
+      "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+      "page_start": 2,
+      "page_end": 3,
+      "section": "1 Introduction",
+      "rerank_score": 0.9904775619506836
+    },
+    {
+      "chunk_id": "p_dpr_0004",
+      "doc_id": "dpr",
+      "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+      "page_start": 6,
+      "page_end": 7,
+      "section": "5.2 Ablation Study on Model Training",
+      "rerank_score": 0.9645224213600159
+    },
+    {
+      "chunk_id": "p_dpr_0009",
+      "doc_id": "dpr",
+      "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+      "page_start": 11,
+      "page_end": 13,
+      "section": "References",
+      "rerank_score": 0.8862236142158508
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 8171,
+  "turn_id": "t_a74ae15b79d9"
+}

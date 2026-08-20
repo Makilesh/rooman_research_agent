@@ -1,0 +1,75 @@
+{
+  "question": "How many attention heads does the base Transformer use, and what is the dimension of each head?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "In this work we employ h = 8 parallel attention layers, or heads.",
+      "cite": [
+        "p_attention_0001"
+      ],
+      "verify_scores": {
+        "p_attention_0001": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "We found it beneficial to linearly project the queries, keys and values h times with different, learned linear projections to dk, dk and dv dimensions, respectively. On each of these projected versions of queries, keys and values we then perform the attention function in parallel, yielding dv-dimensional output values.",
+      "cite": [
+        "p_attention_0001"
+      ],
+      "verify_scores": {
+        "p_attention_0001": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 2,
+      "text": "For each of these we use dk = dv = dmodel/h = 64.",
+      "cite": [
+        "p_attention_0002",
+        "p_attention_0004"
+      ],
+      "verify_scores": {
+        "p_attention_0002": 1.0,
+        "p_attention_0004": 1.0
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_attention_0001",
+      "doc_id": "attention",
+      "title": "Attention Is All You Need",
+      "page_start": 3,
+      "page_end": 5,
+      "section": "3 Model Architecture",
+      "rerank_score": 0.9611709713935852
+    },
+    {
+      "chunk_id": "p_attention_0002",
+      "doc_id": "attention",
+      "title": "Attention Is All You Need",
+      "page_start": 5,
+      "page_end": 7,
+      "section": "3.2.2 Multi-Head Attention",
+      "rerank_score": 0.949669361114502
+    },
+    {
+      "chunk_id": "p_attention_0004",
+      "doc_id": "attention",
+      "title": "Attention Is All You Need",
+      "page_start": 9,
+      "page_end": 10,
+      "section": "6.2 Model Variations",
+      "rerank_score": 0.9333093762397766
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 7546,
+  "turn_id": "t_72f1cc77181c"
+}
