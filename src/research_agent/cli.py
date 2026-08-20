@@ -14,7 +14,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import corpus, db
+from . import corpus, db, evaluate, report
 from . import ingest as ingest_mod
 from . import labels as labels_mod
 from . import index as index_mod
@@ -603,6 +603,118 @@ def labels(
         raise typer.Exit(1)
     _ok(f"all {len(label_set.items)} labels validate",
         "ids exist, text hashes match, classes agree with expected behaviour")
+
+
+@app.command("eval-retrieval")
+def eval_retrieval(
+    thresholds: bool = typer.Option(
+        True, "--thresholds/--no-thresholds", help="Also derive the routing thresholds."
+    ),
+    write: bool = typer.Option(True, "--write/--no-write", help="Write outputs/eval_report.md."),
+) -> None:
+    """LLM-free retrieval ablation and threshold derivation. Consumes zero quota."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    label_set = labels_mod.load(cfg)
+    problems = labels_mod.validate(cfg, conn, label_set, index_mod.load_fingerprint(conn))
+    if problems:
+        for p in problems:
+            _fail(p)
+        console.print("\n[red]Refusing to evaluate against unvalidated labels.[/red]")
+        raise typer.Exit(1)
+    _ok(f"{len(label_set.items)} labels validated against the current index")
+
+    calls_before = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    retrievers = evaluate.Retrievers(cfg, conn)
+
+    results = []
+    for config in evaluate.CONFIGS:
+        res = evaluate.evaluate_config(retrievers, label_set.items, config)
+        results.append(res)
+        console.print(f"  {config:<16} {len(res.items)} questions scored")
+
+    t = Table(show_edge=False, title_justify="left",
+              title=f"RETRIEVAL ABLATION — {len(results[0].items)} answerable questions, "
+                    f"zero LLM calls")
+    t.add_column("config"); t.add_column("Recall@5", justify="right")
+    t.add_column("95% CI", justify="right"); t.add_column("MRR", justify="right")
+    t.add_column("nDCG@10", justify="right"); t.add_column("p50 ms", justify="right")
+    t.add_column("p95 ms", justify="right")
+    for res in results:
+        lo, hi = res.ci95(lambda i: i.recall_at(5))
+        t.add_row(res.config, f"{res.mean(lambda i: i.recall_at(5)):.3f}",
+                  f"[{lo:.2f}, {hi:.2f}]",
+                  f"{res.mean(lambda i: i.mrr()):.3f}",
+                  f"{res.mean(lambda i: i.ndcg_at(10)):.3f}",
+                  f"{res.p50_latency():.0f}", f"{res.p95_latency():.0f}")
+    console.print()
+    console.print(t)
+
+    by_name = {r.config: r for r in results}
+    hybrid = by_name["hybrid"].mean(lambda i: i.recall_at(5))
+    dense = by_name["dense"].mean(lambda i: i.recall_at(5))
+    sparse = by_name["sparse"].mean(lambda i: i.recall_at(5))
+    console.print()
+    if hybrid >= max(dense, sparse):
+        _ok("hybrid >= both single-retriever baselines on Recall@5",
+            f"hybrid {hybrid:.3f} vs dense {dense:.3f}, sparse {sparse:.3f}")
+    else:
+        _fail("hybrid does NOT beat both baselines on Recall@5",
+              f"hybrid {hybrid:.3f} vs dense {dense:.3f}, sparse {sparse:.3f} — investigate")
+
+    run_id = evaluate.persist(conn, cfg, results, notes="llm-free retrieval ablation")
+    _ok(f"persisted as {run_id}", "eval_runs / eval_results")
+
+    evidence = None
+    if thresholds:
+        console.print()
+        console.rule("[bold]THRESHOLD DERIVATION")
+        evidence = evaluate.derive_thresholds(retrievers, label_set, cfg)
+        for pop in (evidence.positives, evidence.negatives):
+            console.print(f"\n[bold]{pop.name}[/bold]  (n={pop.n})")
+            s = pop.summary()
+            console.print("  " + "  ".join(f"{k}={v:.3f}" if k != "n" else f"n={int(v)}"
+                                           for k, v in s.items()))
+            for line in rerank_mod.histogram(pop):
+                console.print(line)
+
+        console.print("\n[bold]Sensitivity sweep[/bold]  "
+                      "(what each candidate tau would actually do)")
+        console.print("   tau  | gold kept | control rejected | balanced")
+        for tau, keep, rej in zip(evidence.sweep.taus,
+                                  evidence.sweep.positive_retention,
+                                  evidence.sweep.negative_rejection):
+            if round(tau * 40) % 4:
+                continue
+            console.print(f"  {tau:.2f} |   {keep:6.1%}  |     {rej:6.1%}       "
+                          f"|  {(keep + rej) / 2:6.1%}")
+        best_tau, best_bal = evidence.sweep.best_f1()
+        console.print(f"\n  balanced-accuracy peak at tau={best_tau:.2f} ({best_bal:.1%})")
+        console.print(f"\n  [bold]TAU_LOW    = {evidence.tau_low}[/bold]   "
+                      f"(p95 of the control population — refuse below this)")
+        console.print(f"  [bold]TAU_HIGH   = {evidence.tau_high}[/bold]   "
+                      f"(p25 of the gold population — answer above this)")
+        console.print(f"  [bold]TAU_VERIFY = {evidence.tau_verify}[/bold]   "
+                      f"(p75 of the control population — groundedness floor)")
+
+    calls_after = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    console.print()
+    if calls_after == calls_before:
+        _ok(f"zero LLM calls consumed", f"ledger unchanged at {calls_after} rows")
+    else:
+        _fail(f"{calls_after - calls_before} LLM calls consumed",
+              "retrieval evaluation must be model-independent")
+
+    if write:
+        path = report.write_eval_report(cfg, results, label_set, evidence)
+        _ok(f"wrote {path.relative_to(cfg.repo_root)}")
 
 
 @app.command("db")
