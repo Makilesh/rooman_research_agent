@@ -1,0 +1,30 @@
+  OK   12 gold labels validated
+─────────────────── 1 · Retrieval ablation (zero LLM calls) ───────────────────
+  OK   zero LLM calls consumed by retrieval evaluation
+─────────────────── 2 · Generation metrics (LLM-dependent) ────────────────────
+  OK   model warmed  the first call after a cold load is not reproducible
+-> q01_transformer_heads
+-> q02_dpr_similarity
+-> q03_qlora_nf4
+-> q04_lora_rank_gpt3
+-> q05_chinchilla_vs_gpt3
+-> q06_rag_uses_dpr
+-> q07_lora_to_qlora_memory
+-> q08_mmlu_on_transformer
+-> q09_gpt4_training_cost
+-> q10_llama2_license
+-> q11_nf4_attributed_to_lora
+-> q12_react_llama3_lr
+────────────────────────── 3 · Conversation metrics ───────────────────────────
+─────────────────────────────────── Summary ───────────────────────────────────
+  citation precision (verified/cited)  1.000   LLM-dependent
+  abstention accuracy                  1.000   4/4
+  fact coverage (mean)                 0.881   LLM-dependent
+  route accuracy (single-turn)         1.000
+  invented citation ids                0
+  refusals carrying citations          0
+  p50 / p95 latency                    1554 / 48892 ms
+  conversation route accuracy          7/13
+  condensation drift rate              0/13  target 0
+  LLM calls / cache hit rate           909 / 33.2%
+  OK   wrote outputs\eval_report.md

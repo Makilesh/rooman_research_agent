@@ -469,8 +469,13 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
         add("")
         add("| Scenario | turn | expected | actual |")
         add("|---|---:|---|---|")
+        from .evaluate import _route_ok
+
         for sid, i, exp, act in convo["rows"]:
-            mark = "" if exp == act else "  <-"
+            # Use the same equivalence the metric uses. Marking refuse-vs-abstain as
+            # a mismatch in the table while counting it correct in the number makes
+            # the two disagree, and a reader will trust the table.
+            mark = "" if _route_ok(exp, act) else "  <-"
             add(f"| {sid} | {i} | {exp} | {act}{mark} |")
         add("")
 
