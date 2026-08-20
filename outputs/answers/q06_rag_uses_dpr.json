@@ -1,0 +1,62 @@
+{
+  "question": "How does RAG combine a dense retriever with a generator, and which retriever does it build on?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "We build RAG models where the parametric memory is a pre-trained seq2seq transformer, and the non-parametric memory is a dense vector index of Wikipedia, accessed with a pre-trained neural retriever.",
+      "cite": [
+        "p_rag_0000"
+      ],
+      "verify_scores": {
+        "p_rag_0000": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "The retrieval component pη(z|x) is based on DPR [26].",
+      "cite": [
+        "p_rag_0005"
+      ],
+      "verify_scores": {
+        "p_rag_0005": 0.75
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_rag_0000",
+      "doc_id": "rag",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "page_start": 1,
+      "page_end": 2,
+      "section": null,
+      "rerank_score": 0.9849274158477783
+    },
+    {
+      "chunk_id": "p_rag_0001",
+      "doc_id": "rag",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "page_start": 2,
+      "page_end": 4,
+      "section": "1 Introduction",
+      "rerank_score": 0.9352282881736755
+    },
+    {
+      "chunk_id": "p_rag_0005",
+      "doc_id": "rag",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "page_start": 7,
+      "page_end": 8,
+      "section": "4.4 Fact Verification",
+      "rerank_score": 0.7191864252090454
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 5562,
+  "turn_id": "t_0c44232736d8"
+}

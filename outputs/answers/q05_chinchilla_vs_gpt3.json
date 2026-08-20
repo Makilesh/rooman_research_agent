@@ -1,0 +1,53 @@
+{
+  "question": "According to the compute-optimal scaling work, how should model size and training tokens be scaled together, and how does that compare with how GPT-3 was trained?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "We find that model size and the number of training tokens should be scaled in equal proportions.",
+      "cite": [
+        "p_chinchilla_0000"
+      ],
+      "verify_scores": {
+        "p_chinchilla_0000": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "Following Kaplan et al. (2020) and the training setup of GPT-3, many of the recently trained large models have been trained for approximately 300 billion tokens, in line with the approach of predominantly increasing model size when increasing compute.",
+      "cite": [
+        "p_chinchilla_0000"
+      ],
+      "verify_scores": {
+        "p_chinchilla_0000": 1.0
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_gpt3_0005",
+      "doc_id": "gpt3",
+      "title": "Language Models are Few-Shot Learners",
+      "page_start": 7,
+      "page_end": 9,
+      "section": "2 Approach",
+      "rerank_score": 0.996249258518219
+    },
+    {
+      "chunk_id": "p_chinchilla_0000",
+      "doc_id": "chinchilla",
+      "title": "Training Compute-Optimal Large Language Models",
+      "page_start": 1,
+      "page_end": 3,
+      "section": null,
+      "rerank_score": 0.9939963817596436
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 5780,
+  "turn_id": "t_8ccbc9ccc104"
+}

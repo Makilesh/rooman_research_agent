@@ -1,0 +1,62 @@
+{
+  "question": "How does QLoRA reduce memory beyond what LoRA alone achieves?",
+  "insufficient_evidence": false,
+  "refusal_reason": null,
+  "sentences": [
+    {
+      "idx": 0,
+      "text": "QLORA introduces multiple innovations designed to reduce memory use without sacrificing performance: (2) Double Quantization, a method that quantizes the quantization constants, saving an average of about 0.37 bits per parameter (approximately 3 GB for a 65B model).",
+      "cite": [
+        "p_qlora_0001"
+      ],
+      "verify_scores": {
+        "p_qlora_0001": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 1,
+      "text": "Additionally, we introduce Paged Optimizers, to prevent memory spikes during gradient checkpointing from causing out-of-memory errors that have traditionally made finetuning on a single machine difficult for large models.",
+      "cite": [
+        "p_qlora_0000"
+      ],
+      "verify_scores": {
+        "p_qlora_0000": 0.974628746509552
+      },
+      "status": "verified"
+    }
+  ],
+  "sources": [
+    {
+      "chunk_id": "p_qlora_0000",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 1,
+      "page_end": 2,
+      "section": null,
+      "rerank_score": 0.9147487282752991
+    },
+    {
+      "chunk_id": "p_qlora_0002",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 3,
+      "page_end": 5,
+      "section": "2 Background",
+      "rerank_score": 0.8708171844482422
+    },
+    {
+      "chunk_id": "p_qlora_0001",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 2,
+      "page_end": 3,
+      "section": "1 Introduction",
+      "rerank_score": 0.7940657734870911
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 6796,
+  "turn_id": "t_c321eb7a0516"
+}

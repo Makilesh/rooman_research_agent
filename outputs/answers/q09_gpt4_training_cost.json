@@ -1,0 +1,30 @@
+{
+  "question": "What was the total dollar cost of training GPT-4?",
+  "insufficient_evidence": true,
+  "refusal_reason": "The passages give information about model sizes, Elo scores, and training hyperparameters, but do not provide any details about the total dollar cost of training GPT-4.",
+  "sentences": [],
+  "sources": [
+    {
+      "chunk_id": "p_qlora_0001",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 2,
+      "page_end": 3,
+      "section": "1 Introduction",
+      "rerank_score": 0.2933032512664795
+    },
+    {
+      "chunk_id": "p_qlora_0015",
+      "doc_id": "qlora",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "page_start": 22,
+      "page_end": 24,
+      "section": "B.1 Datasets",
+      "rerank_score": 0.2635994255542755
+    }
+  ],
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 3328,
+  "turn_id": "t_1e2cbd77d4be"
+}

@@ -879,3 +879,250 @@ reranking is a defensible configuration and the table already prices it.
 **README line:** "Hybrid retrieval beats both single-retriever baselines and
 reranking adds more on top, but the confidence intervals overlap at eight questions
 — the ordering is trustworthy, the exact gaps are not."
+
+---
+
+## D-016 · The citation contract: structured output, not parsed prose
+**Date:** 2026-08-20
+**Context:** My M&A engine's README lists as a known limitation: *"passage-level
+citations require manual parsing of the synthesiser's inline markers."* This build
+exists largely to fix that.
+**Decision:** The model emits `{insufficient_evidence, refusal_reason, sentences:
+[{text, cite: [chunk_id]}]}` under constrained decoding on both providers. Citations
+are never regex'd out of prose.
+**Why it is better than markers, concretely:** a sentence-to-chunk mapping is
+*checkable* (every id can be validated against what was retrieved), *persistable*
+(one row per link in `turn_citations`), and *queryable* (a later turn can resolve
+"the second source" with SQL). Inline markers are none of those. They are also
+lossy in a way that is easy to miss: `[2]` in prose tells you nothing about which
+sentence it supports once two markers sit in one paragraph.
+**Consequence:** the answer is assembled from sentences rather than generated as
+prose, which costs some fluency. Measured on 12 questions the answers read normally.
+**Evidence:** 12/12 schema-valid on the full question set; 31 `turn_citations` rows
+persisted; rendering verified to match stored page numbers by test.
+**Revisit if:** never — this is the thesis.
+**README line:** "Citations are a structured contract the model must emit, not markers
+parsed out of prose, which is what makes them checkable, storable and queryable."
+
+---
+
+## D-017 · Constrained decoding guarantees shape; ids are validated separately
+**Date:** 2026-08-20
+**Decision:** Every returned chunk id is checked against the set actually retrieved
+for that turn. An id outside that set raises `InventedCitation` and the answer is
+never rendered.
+**Why fatal rather than filtered:** dropping a bad citation silently would leave a
+partially-correct answer that looks complete, and a fabricated citation is the single
+failure this whole system exists to prevent. Loud beats tidy.
+**Why it is needed at all, given the schema:** constrained decoding guarantees the
+*shape* of the output. It cannot guarantee the ids are real — a model can emit a
+perfectly well-formed lie. The two mechanisms cover different failures and neither is
+redundant.
+**Consequence:** a hard failure on a rare model error, which is the correct trade.
+**Evidence:** `test_an_invented_chunk_id_raises_rather_than_rendering`; 12/12 questions
+produced zero invented ids in the live run.
+**README line:** "Schema-constrained decoding fixes the shape of a citation; a
+separate check fixes its truth, because a model can emit a well-formed lie."
+
+---
+
+## D-018 · A refusal carries zero citations, structurally
+**Date:** 2026-08-20
+**Decision:** When `insufficient_evidence` is true, any sentences the model returned
+are discarded. An answer with no usable sentences is also converted into a refusal.
+**Why:** the control questions are scored on *zero fabricated citations*, and that
+property should hold because of how the code is written, not because the model
+behaved well on the day. A refusal that still carries citations is self-contradictory.
+**Consequence:** a model that flags insufficiency while also writing a good answer
+loses the answer. Correct: the flag is the model's own judgement that it should not
+be answering.
+**Evidence:** `test_the_refusal_path_produces_zero_citations`; live run — all four
+controls abstained with zero citations.
+**README line:** "A refusal cannot carry a citation, by construction rather than by
+good behaviour."
+
+---
+
+## D-117 · Ollama silently truncates the prompt — the guard that catches it
+**Date:** 2026-08-20
+**Context:** The first end-to-end run timed out. Diagnosing it turned up something
+much worse than slowness.
+**What was happening:** Ollama's default context window is **4096 tokens**. The
+context here is ~7000. Ollama does not error, warn, or degrade visibly — it drops the
+overflow and answers from what is left. Measured directly: a 26,093-character prompt
+came back reporting `prompt_eval_count = 4096`.
+**Why this is the most dangerous bug found in the build:** the model still produces
+fluent, correctly-formatted, properly-cited output. The schema validates. The ids all
+exist. Verification passes. Every check in the system goes green while the answer was
+written from **less than half the evidence**, and citations may point at passages the
+model never actually received.
+**Decision:** set `num_ctx` explicitly, and after every call compare the reported
+`prompt_eval_count` against the window. If it has pinned to the limit, raise
+`ContextTruncated` rather than returning the answer.
+**Consequence:** a legitimately over-long context now fails loudly instead of
+answering badly. That immediately caught a second real case (a question whose six
+parent passages exceeded 8192 tokens), which led to D-120.
+**Evidence:** measured `prompt=4096` on a ~7000-token prompt; after the fix, the same
+question answers in 3.1s with the full context.
+**Revisit if:** never.
+**README line:** "Ollama truncates an over-long prompt silently and answers from what
+is left, with every downstream check still passing — so the reported prompt token
+count is compared against the window on every call."
+
+---
+
+## D-118 · Lexical containment alongside the cross-encoder, because measurement forced it
+**Date:** 2026-08-20
+**Context:** The plan was cross-encoder-only groundedness verification: free,
+deterministic, quota-neutral.
+**What the first run showed:** both sentences of a correct answer were flagged
+`unverified`. They were **verbatim quotes** from the passage they cited.
+**The measurement:** for a sentence lifted word-for-word from `p_attention_0002`:
+
+| passage | contains the sentence? | cross-encoder score |
+|---|---|---:|
+| `p_attention_0002` | **yes, verbatim** | **0.3438** |
+| `p_attention_0001` | no | 0.6218 |
+
+**Why:** the cross-encoder scores *topical relevance between a query and a document*.
+"Does this 1,800-token passage contain this 12-word statement?" is a different
+question, and it answers it badly — badly enough to rank a verbatim containment below
+a passage that does not contain the sentence at all. Two further scale mismatches
+compounded it: `tau_verify` was derived from *questions* scored against *child*
+chunks, but applied to *sentences* scored against *parent* passages.
+**Decision:** compute a deterministic lexical containment score — content-token
+coverage, plus a decisive rule for any 5-token verbatim run — and accept a sentence
+if **either** signal clears the floor.
+**Why either, not both:** lexical overlap is near-perfect for quotation and close
+paraphrase, which is what a grounded model actually produces most of the time, and
+weak for genuine paraphrase. The cross-encoder is the reverse. Requiring both would
+fail almost everything that is true.
+**Consequence:** verification is no longer purely model-based, which is an
+*improvement* in honesty — the lexical half is fully deterministic and explainable,
+and it is free. It also weakens a caveat: the reranker/verifier correlation I flagged
+matters less now that the dominant signal is not the reranker.
+**Evidence:** before, `verified 0 / unverified 2` on a correct answer; after,
+`verified 2`. Across the full 12-question run every answering question had all its
+sentences verified.
+**Revisit if:** a trained NLI verifier becomes affordable, which is the real fix.
+**README line:** "Cross-encoder relevance scores a verbatim quote *below* a passage
+that does not contain it, so groundedness also uses deterministic lexical containment
+— measured, not assumed."
+
+---
+
+## D-119 · Groundedness is not correctness — the attribution trap
+**Date:** 2026-08-20
+**Context:** The control question *"How does Attention Is All You Need evaluate on
+MMLU?"* must be refused. It was not.
+**What happened:** retrieval surfaced a QLoRA passage that genuinely discusses MMLU.
+The model answered *"We provide evaluations on MMLU"* and cited it. The citation was
+real. The sentence was verbatim in the passage. Verification passed. The answer was
+**completely wrong** — it answered about the wrong paper.
+**The lesson, which goes in the README:** groundedness verification checks
+*sentence ↔ passage* support. It cannot check *question ↔ answer* relevance. A
+sentence can be perfectly grounded in a real passage and still be the wrong answer,
+and that failure passes every automated check in the system. This is the most
+convincing way for a citation system to be wrong.
+**Decision:** an explicit attribution rule in the system prompt, promoted above the
+refusal rule, plus a worked example of the exact trap: right topic, wrong paper.
+**Consequence:** the question now refuses correctly, and all four controls abstain.
+But the underlying gap is structural, not fixed by a prompt: the durable fix is the
+three-way router (Step 10), which would have sent this to CLARIFY on its top rerank
+score of 0.8287 — inside the measured clarify band of [0.80, 0.99].
+**Evidence:** before, a confidently wrong cited answer; after, an explicit refusal
+naming what is missing. Full run: 4/4 controls abstain.
+**Revisit if:** Step 10's router makes the prompt rule redundant. Keep both anyway —
+they fail differently.
+**README line:** "Groundedness verification proves a sentence came from its cited
+passage; it cannot prove the passage answers the question. A right-topic wrong-paper
+answer passes every automated check, which is why attribution is checked explicitly."
+
+---
+
+## D-120 · Context is trimmed by dropping whole passages, never by truncating one
+**Date:** 2026-08-20
+**Context:** Six parent passages at ~2000 tokens each overflow an 8192-token window
+before the prompt template is added. D-117's guard caught this immediately.
+**Options:** (a) raise `num_ctx` — costs KV-cache VRAM, which is scarce in coresident
+mode; (b) truncate the context string; (c) drop whole passages from the bottom of the
+ranking until it fits.
+**Decision:** (c), with the budget in `config.py`.
+**Why not (b):** truncating a passage's text would mean the verifier scores against
+text the synthesiser did not see — reintroducing exactly the trap this project was
+built around — and would let the model cite a chunk id whose content it only partly
+received. A citation must point at a passage that was present *in full*.
+**Consequence:** low-ranked evidence is dropped rather than half-included. The
+dropped passages are the lowest-reranked, so the loss is the least valuable evidence,
+and `turn_retrievals` still records them as retrieved-but-unused for audit.
+**Evidence:** questions that previously raised `ContextTruncated` now answer with 3-4
+passages in context.
+**README line:** "When the context budget binds, whole passages are dropped from the
+bottom of the ranking — never truncated — because a citation must point at a passage
+the model received in full."
+
+---
+
+## D-121 · Multi-hop synthesis does NOT yet work — measured, not assumed
+**Date:** 2026-08-20
+**Context:** Three questions are labelled `multi_hop` and are supposed to produce
+answers citing two or more papers.
+**Measured on the live run:**
+
+| question | papers cited | papers available in context |
+|---|---|---|
+| q05 chinchilla vs gpt3 | `[chinchilla]` | `[chinchilla, gpt3]` |
+| q06 rag uses dpr | `[rag]` | `[rag]` |
+| q07 lora to qlora | `[qlora]` | `[qlora]` |
+
+**All three answered from a single paper.** Two distinct causes, and they need
+different fixes:
+1. **q06 and q07: the second paper never reached the context at all.** Reranking to
+   top-6, parent expansion, and the token budget together squeeze out the weaker
+   paper. This is precisely what the **document-diversity guard (Step 10)** is
+   specified to fix — ensure both papers survive into context when both clear the
+   floor.
+2. **q05: both papers were available and the model used one.** The Chinchilla
+   introduction happens to mention GPT-3's ~300B training tokens, so a single passage
+   sufficed. The answer is correct and well-cited; it simply is not multi-hop.
+   **Sub-question decomposition (Step 11)** is the fix — retrieving each sub-question
+   independently forces evidence from both papers into play.
+**Decision:** record this as an open, measured gap rather than quietly accepting
+three correct-looking answers. The answers are *right*; the *capability* being
+claimed is not yet demonstrated.
+**Consequence:** any claim about multi-hop in the README stays `TBD` until Steps 10
+and 11 land and this table is re-measured.
+**Evidence:** the table above, derived from `outputs/answers/q0{5,6,7}.json`.
+**Revisit if:** after Step 11, re-run and re-measure. If decomposition does not move
+these numbers, say so.
+**README line:** "Multi-hop questions currently produce correct answers from a single
+paper — the capability is not yet demonstrated, and the measurement that shows it is
+published rather than the three passing answers being taken at face value."
+
+---
+
+## D-122 · Coresident VRAM contention costs ~20x, and `keep_alive` is the fix
+**Date:** 2026-08-20
+**Context:** The hardware plan budgets encoders at ~4 GB, leaving ~7.5 GB for an
+8B-class local model on a 12 GB card.
+**What was measured:** the encoders take only 2.16 GB — well under budget. But an
+identical short Ollama call took **1.5s standalone** and **71.4s** with the encoders
+resident. Watching `GPU free` across a run showed why: it fell to 5.23 GiB and then
+rose back to 8.64 GiB. Ollama's scheduler was **evicting and reloading the 5.46 GB
+model between calls** under memory pressure. The cost was pure disk I/O, not
+inference.
+**Decision:** send `keep_alive` on every request so the model stays resident, and set
+`num_ctx` explicitly so its KV-cache reservation is predictable rather than
+renegotiated per call.
+**Consequence:** measured per-question latency across the full 12-question run is
+3.3s-15.0s, against a 180s timeout before the fix.
+**Note on the original hardware plan:** the VRAM budget was roughly right about
+totals and wrong about the failure mode. The problem was never that things did not
+fit — it was that a scheduler with a little headroom pressure will thrash rather than
+fail, and thrashing looks exactly like slowness.
+**Evidence:** the `GPU free` trace, and the 1.5s vs 71.4s comparison of the same call.
+**Revisit if:** `sequential` offload mode is measured (Step 7's open item) and proves
+better.
+**README line:** "Encoders and an 8B local model coexist on 12 GB, but only with
+`keep_alive` set — otherwise the scheduler evicts and reloads the model between
+calls and a 1.5s request takes 71s."
