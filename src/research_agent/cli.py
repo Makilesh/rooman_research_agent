@@ -16,6 +16,7 @@ from rich.table import Table
 
 from . import corpus, db
 from . import ingest as ingest_mod
+from . import labels as labels_mod
 from . import index as index_mod
 from . import rerank as rerank_mod
 from . import retrieve
@@ -525,6 +526,83 @@ def ask(
                    f"#{fused_rank.get(h.chunk_id, 0)}", h.doc_id, str(h.page_start),
                    (h.section or "")[:22], " ".join(h.text.split())[:60])
     console.print(t4)
+
+
+@app.command()
+def labels(
+    stamp: bool = typer.Option(False, "--stamp", help="Record each gold chunk's text_sha."),
+    show: bool = typer.Option(False, "--show", help="Print every label beside its chunk text."),
+    chars: int = typer.Option(700, "--chars", help="How much chunk text to print."),
+) -> None:
+    """Validate the gold labels against the text the pipeline actually extracted.
+
+    Fabricated ground truth invalidates every number downstream while looking
+    perfectly healthy, so labels are checked rather than trusted.
+    """
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    fingerprint = index_mod.load_fingerprint(conn)
+
+    if stamp:
+        n = labels_mod.stamp(cfg, conn)
+        _ok(f"stamped text_sha for {n} gold chunk(s)")
+
+    label_set = labels_mod.load(cfg)
+    console.print(f"{len(label_set.items)} questions · "
+                  f"{len(label_set.answerable)} answerable · "
+                  f"{len(label_set.controls)} controls")
+    console.print(f"labelled against corpus {label_set.fingerprint_at_labelling} "
+                  f"on {label_set.labelled_on}; index is now {fingerprint}\n")
+
+    counts: dict[str, int] = {}
+    for item in label_set.items:
+        counts[item.cls] = counts.get(item.cls, 0) + 1
+    t = Table(show_edge=False)
+    t.add_column("class"); t.add_column("n", justify="right"); t.add_column("behaviour")
+    for cls, n in counts.items():
+        behaviour = {
+            "single_hop": "answer, 1-2 citations, correct paper",
+            "multi_hop": "answer citing >= 2 papers",
+            "unanswerable": "explicit refusal, zero citations",
+            "false_premise": "reject the premise, cite what the sources do say",
+        }.get(cls, "")
+        t.add_row(cls, str(n), behaviour)
+    console.print(t)
+
+    if show:
+        chunks = labels_mod.fetch_chunks(
+            conn, [c for i in label_set.items for c in i.gold_chunks]
+        )
+        for item in label_set.items:
+            console.print()
+            console.rule(f"[bold cyan]{item.id} · {item.cls}")
+            console.print(f"[bold]{item.question}[/bold]")
+            if item.false_premise_is:
+                console.print(f"[yellow]false premise:[/yellow] {item.false_premise_is}")
+            if item.why_unanswerable:
+                console.print(f"[yellow]unanswerable:[/yellow] {item.why_unanswerable}")
+            if not item.gold_chunks:
+                console.print("[dim]no gold chunks — a control question has no correct "
+                              "citation by construction.[/dim]")
+                continue
+            for cid in item.gold_chunks:
+                row = chunks.get(cid)
+                if row is None:
+                    _fail(cid, "does not exist")
+                    continue
+                console.print(f"\n  [green]{cid}[/green]  {row['doc_id']} "
+                              f"p.{row['page_start']} §{row['section'] or '-'}")
+                console.print("  " + " ".join(row["text"].split())[:chars])
+
+    problems = labels_mod.validate(cfg, conn, label_set, fingerprint)
+    console.print()
+    if problems:
+        for p in problems:
+            _fail(p)
+        raise typer.Exit(1)
+    _ok(f"all {len(label_set.items)} labels validate",
+        "ids exist, text hashes match, classes agree with expected behaviour")
 
 
 @app.command("db")

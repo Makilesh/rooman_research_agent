@@ -1,0 +1,153 @@
+# Single-turn evaluation set — 12 items over the 11-paper corpus.
+#
+# EVERY gold_chunk below was chosen by reading the extracted chunk text through
+# `research-agent labels --show`, never from recollection of these papers. The
+# quote recorded on each label is the sentence in that chunk that carries the
+# answer, so a reviewer can check the label without running anything.
+#
+# text_sha is stamped by `research-agent labels --stamp` and re-checked on every
+# evaluation run. A chunk id that still resolves but whose text has moved — because
+# the chunking config changed, or the source was revised — fails loudly instead of
+# silently scoring against a passage that no longer says what it said when labelled.
+#
+# Classes and expected behaviour:
+#   single_hop     answer, 1-2 citations, correct paper
+#   multi_hop      answer citing >= 2 papers; should trigger decomposition
+#   unanswerable   explicit refusal, zero fabricated citations   (control)
+#   false_premise  reject the premise, cite what the sources DO say
+
+version: 1
+corpus_fingerprint_at_labelling: "e62c6925a03ad297"
+labelled_on: "2026-08-20"
+
+questions:
+
+  # ── single-hop factual ──────────────────────────────────────────────────
+  - id: q01_transformer_heads
+    question: "How many attention heads does the base Transformer use, and what is the dimension of each head?"
+    class: single_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_attention_0005]
+    text_shas: {c_attention_0005: 1df3d66add2a6cde}
+    expected_facts: ["8", "64", "head"]
+    label_quote: "In this work we employ h = 8 parallel attention layers, or heads. For each of these we use dk = dv = dmodel/h = 64."
+
+  - id: q02_dpr_similarity
+    question: "What similarity function does Dense Passage Retrieval use to compare a question and a passage, and why was it chosen?"
+    class: single_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_dpr_0005, c_dpr_0012]
+    text_shas: {c_dpr_0005: 9840b9488ab05d64, c_dpr_0012: 2c3c256f5e71edf9}
+    expected_facts: ["dot product", "decomposable", "precomputed"]
+    label_quote: "We define the similarity between the question and the passage using the dot product of their vectors ... the similarity function needs to be decomposable so that the representations of the collection of passages can be precomputed."
+
+  - id: q03_qlora_nf4
+    question: "What is the NF4 NormalFloat data type in QLoRA, and in what sense is it optimal?"
+    class: single_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_qlora_0007, c_qlora_0002]
+    text_shas: {c_qlora_0007: 11a9d2d3a46a63d4, c_qlora_0002: 389154709993d2ff}
+    expected_facts: ["NormalFloat", "information", "optimal", "normally distributed"]
+    label_quote: "We term the resulting data type ... k-bit NormalFloat (NFk), since the data type is information-theoretically optimal for zero-centered normally distributed data."
+
+  - id: q04_lora_rank_gpt3
+    question: "What rank does LoRA use in its GPT-3 175B experiments, and which weight matrices does it adapt?"
+    class: single_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_lora_0020, c_lora_0008]
+    text_shas: {c_lora_0020: 32f30296cf79d2fa, c_lora_0008: 4b8fc1670384c4bd}
+    expected_facts: ["r = 8", "r = 4", "attention", "18M"]
+    label_quote: "We set a parameter budget of 18M ... on GPT-3 175B, which corresponds to r = 8 if we adapt one type of attention weights or r = 4 if we adapt two types, for all 96 layers."
+
+  # ── multi-hop / cross-paper ─────────────────────────────────────────────
+  - id: q05_chinchilla_vs_gpt3
+    question: "According to the compute-optimal scaling work, how should model size and training tokens be scaled together, and how does that compare with how GPT-3 was trained?"
+    class: multi_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_chinchilla_0013, c_chinchilla_0002, c_gpt3_0014]
+    text_shas: {c_chinchilla_0013: a05f26c7f7917d89, c_chinchilla_0002: b08e41decacd3f69, c_gpt3_0014: fe01937978ef9fd5}
+    expected_facts: ["equal proportions", "training tokens", "175", "undertrained"]
+    label_quote: "we reach the similar conclusion that model size and number of training tokens should be scaled in equal proportions."
+    requires_documents: [chinchilla, gpt3]
+
+  - id: q06_rag_uses_dpr
+    question: "How does RAG combine a dense retriever with a generator, and which retriever does it build on?"
+    class: multi_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_rag_0005, c_rag_0002, c_dpr_0005]
+    text_shas: {c_rag_0005: dc5da07ce1a5a047, c_rag_0002: 57d6756759b5c5b2, c_dpr_0005: 9840b9488ab05d64}
+    expected_facts: ["DPR", "bi-encoder", "MIPS", "seq2seq"]
+    label_quote: "The retrieval component p(z|x) is based on DPR. DPR follows a bi-encoder architecture ... Maximum Inner Product Search (MIPS)."
+    requires_documents: [rag, dpr]
+
+  - id: q07_lora_to_qlora_memory
+    question: "How does QLoRA reduce memory beyond what LoRA alone achieves?"
+    class: multi_hop
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_qlora_0005, c_qlora_0002, c_lora_0008]
+    text_shas: {c_qlora_0005: a4c2fe9a103501be, c_qlora_0002: 389154709993d2ff, c_lora_0008: 4b8fc1670384c4bd}
+    expected_facts: ["4-bit", "NormalFloat", "Double Quantization", "Paged Optimizers", "activation gradients"]
+    label_quote: "most of the memory footprint for LLM finetuning comes from activation gradients and not from the learned LoRA parameters."
+    requires_documents: [qlora, lora]
+
+  # ── unanswerable controls ───────────────────────────────────────────────
+  # Nothing in this corpus addresses these. The only correct behaviour is an
+  # explicit refusal with zero citations.
+  - id: q08_mmlu_on_transformer
+    question: "How does Attention Is All You Need evaluate the Transformer on the MMLU benchmark?"
+    class: unanswerable
+    must_abstain: true
+    expected_route: refuse
+    gold_chunks: []
+    expected_facts: []
+    why_unanswerable: "MMLU postdates the 2017 paper by five years. The paper evaluates on WMT translation and WSJ constituency parsing."
+
+  - id: q09_gpt4_training_cost
+    question: "What was the total dollar cost of training GPT-4?"
+    class: unanswerable
+    must_abstain: true
+    expected_route: refuse
+    gold_chunks: []
+    expected_facts: []
+    why_unanswerable: "GPT-4 is not one of the eleven papers, and no paper here reports a dollar training cost."
+
+  - id: q10_llama2_license
+    question: "Under what licence were the Llama 2 model weights released?"
+    class: unanswerable
+    must_abstain: true
+    expected_route: refuse
+    gold_chunks: []
+    expected_facts: []
+    why_unanswerable: "No Llama paper is in the corpus, and no paper here discusses model weight licensing."
+
+  # ── false-premise / adversarial ─────────────────────────────────────────
+  # The premise is wrong but the topic IS in the corpus. Correct behaviour is to
+  # reject the premise and cite what the sources actually say — not to refuse
+  # outright, and certainly not to play along.
+  - id: q11_nf4_attributed_to_lora
+    question: "Which section of the LoRA paper describes its 4-bit NF4 quantisation scheme?"
+    class: false_premise
+    must_abstain: false
+    expected_route: answer
+    gold_chunks: [c_qlora_0007, c_qlora_0002]
+    text_shas: {c_qlora_0007: 11a9d2d3a46a63d4, c_qlora_0002: 389154709993d2ff}
+    expected_facts: ["QLoRA", "NormalFloat", "not", "LoRA"]
+    false_premise_is: "NF4 is introduced by QLoRA, not by LoRA. LoRA contains no quantisation scheme at all."
+    label_quote: "We term the resulting data type ... k-bit NormalFloat (NFk) ... (QLoRA, section 3)"
+
+  - id: q12_react_llama3_lr
+    question: "What learning rate does the ReAct paper use when fine-tuning Llama 3?"
+    class: false_premise
+    must_abstain: true
+    expected_route: refuse
+    gold_chunks: []
+    expected_facts: []
+    false_premise_is: "ReAct (October 2022) predates Llama 3 entirely. Its fine-tuning experiments use PaLM-8B/62B, not Llama."
+    why_unanswerable: "Harder than a cold refusal: the paper IS in the corpus and IS about fine-tuning, so retrieval will surface confident-looking near-misses."
