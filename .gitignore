@@ -1,2 +1,34 @@
-/.venv
 
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+.env
+
+# ─── Corpus: fetched by `make fetch-corpus` from data/manifest.yaml.
+#     The manifest is the reproducible artifact; the PDFs are arXiv's to
+#     distribute, not mine (D-006).
+data/sources/*.pdf
+data/sources/*.md
+data/sources/*.txt
+
+# ─── Generated state ─────────────────────────────────────────────────────────
+storage/
+*.db
+*.db-wal
+*.db-shm
+*.npy
+.cache/
+.m/
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# ─── Editors / OS ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

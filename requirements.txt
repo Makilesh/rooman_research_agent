@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  cited-research-agent — exact pins.
+#
+#  TORCH MUST BE A CUDA BUILD.
+#  `pip install torch` resolves to a CPU-only wheel, reports success, and then
+#  runs every encoder ~5x slower with no error anywhere. If a CPU torch is
+#  already installed, `pip install torch` prints "already satisfied" and leaves
+#  you on CPU. This is the single most expensive silent failure in the project,
+#  so `doctor --gpu` hard-fails when CUDA is absent.
+#
+#  RTX 50-series (Blackwell) is compute capability sm_120 and needs CUDA 12.8+.
+#  This project is verified on the cu130 wheels; cu126 wheels will load but have
+#  no sm_120 kernels.
+#
+#  Recovering from an existing CPU torch:
+#    pip install --force-reinstall --no-deps torch==2.12.1+cu130 \
+#        --index-url https://download.pytorch.org/whl/cu130
+# ─────────────────────────────────────────────────────────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+torch==2.12.1+cu130
+
+# Retrieval encoders: bge-m3 (dense) and bge-reranker-v2-m3 (cross-encoder).
+sentence-transformers==6.0.0
+transformers==5.15.1
+huggingface-hub==1.28.0
+tokenizers==0.22.2
+safetensors==0.8.0
+numpy==2.5.2
+
+# Corpus ingestion. PyMuPDF is page-streamed and gives reliable page numbers,
+# which every citation in this system depends on.
+pymupdf==1.28.2
+
+# CLI, config, transport.
+typer==0.27.1
+rich==15.0.0
+PyYAML==6.0.3
+python-dotenv==1.2.3
+httpx==0.28.1
+
+# Gemini. Optional at runtime: the Ollama path must work with no API key.
+google-genai==2.19.0
+
+pytest==9.1.1
