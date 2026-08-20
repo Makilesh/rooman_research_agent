@@ -68,9 +68,17 @@ def stem(word: str) -> str:
     """
     w = word.lower()
     for suffix in ("ations", "ation", "ingly", "edly", "ings", "ing", "ies", "ied",
-                   "ies", "es", "ed", "ly", "s"):
+                   "es", "ed", "ly", "s"):
         if len(w) > len(suffix) + 3 and w.endswith(suffix):
-            return w[: -len(suffix)]
+            w = w[: -len(suffix)]
+            break
+    # Strip a trailing "e" as well, always. Without this the stemmer is INCONSISTENT
+    # rather than merely crude: "compared" loses "ed" and becomes "compar", while
+    # "compare" matches no suffix and stays "compare". The drift guard then reports
+    # a novel content word for a rephrasing that used a word already in the
+    # conversation -- a false positive, observed on scenario B turn 3.
+    if len(w) > 4 and w.endswith("e"):
+        w = w[:-1]
     return w
 
 
@@ -184,8 +192,9 @@ def render_history(turns: Sequence[Turn]) -> str:
 # ---------------------------------------------------------------------------
 #  Coreference
 # ---------------------------------------------------------------------------
-def resolve_source_references(conn: Connection, session_id: str,
-                             text: str) -> tuple[str, list[str]]:
+def resolve_source_references(
+    conn: Connection, session_id: str, text: str
+) -> tuple[str, list[str], list[tuple[str, int]]]:
     """Resolve "the second source" and explicit chunk ids against `turn_citations`.
 
     This is the concrete payoff of the structured citation contract, and the thing
@@ -197,11 +206,14 @@ def resolve_source_references(conn: Connection, session_id: str,
     answer, which is the order the user actually saw.
     """
     referenced: list[str] = []
+    unresolved: list[tuple[str, int]] = []
 
     for match in _CHUNK_REF.finditer(text):
         referenced.append(match.group(1))
 
     ordinals = _ORDINAL_REF.findall(text)
+    if ordinals:
+        pass
     if ordinals:
         last = db.one(conn, """
             SELECT turn_id FROM turns
@@ -218,13 +230,20 @@ def resolve_source_references(conn: Connection, session_id: str,
             for word in ordinals:
                 idx = _ORDINALS[word.lower()]
                 if not order:
+                    unresolved.append((word, 0))
                     continue
                 target = order[-1] if idx == -1 else (
                     order[idx - 1] if 0 < idx <= len(order) else None)
                 if target:
                     referenced.append(target)
+                else:
+                    # The user pointed at a source that does not exist -- the previous
+                    # answer had fewer. Retrieving on the bare phrase would score near
+                    # zero and produce a confusing refusal, so the caller is told
+                    # exactly what went wrong instead.
+                    unresolved.append((word, len(order)))
 
-    return text, list(dict.fromkeys(referenced))
+    return text, list(dict.fromkeys(referenced)), unresolved
 
 
 def describe_references(conn: Connection, chunk_ids: Sequence[str]) -> str:
