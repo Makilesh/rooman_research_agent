@@ -17,6 +17,7 @@ from rich.table import Table
 from . import corpus, db
 from . import ingest as ingest_mod
 from . import index as index_mod
+from . import rerank as rerank_mod
 from . import retrieve
 from .config import Config
 from .llm import LLMClient, OllamaProvider
@@ -479,6 +480,39 @@ def ask(
     overlap = {h.chunk_id for h in dense} & {h.chunk_id for h in sparse}
     console.print(f"\n[dim]{len(overlap)}/{k} chunks appear in both lists — "
                   f"the disagreement is what hybrid retrieval exists to exploit.[/dim]")
+
+    # -- fusion and reranking ------------------------------------------------
+    wide_dense = retrieve.dense_search(conn, qvec, vectors, cfg)
+    wide_sparse = retrieve.sparse_search(conn, question, cfg)
+    fused = retrieve.reciprocal_rank_fusion(wide_dense, wide_sparse, cfg)
+
+    console.print()
+    t3 = Table(show_edge=False, title_justify="left",
+               title=f"HYBRID — RRF (k={cfg.rrf_k}), top 6 of {len(fused)} fused")
+    for c, j in (("#", "right"), ("rrf", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t3.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in fused[:6]:
+        t3.add_row(str(h.rank), f"{h.rrf_score:.5f}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:22], " ".join(h.text.split())[:64])
+    console.print(t3)
+
+    model_rr = rerank_mod.load_reranker(cfg)
+    reranked = rerank_mod.rerank(model_rr, question, fused, cfg)
+
+    console.print()
+    t4 = Table(show_edge=False, title_justify="left",
+               title="HYBRID + CROSS-ENCODER RERANK")
+    for c, j in (("#", "right"), ("score", "right"), ("was", "right"),
+                 ("paper", "left"), ("page", "right"), ("section", "left"),
+                 ("text", "left")):
+        t4.add_column(c, justify=j)  # type: ignore[arg-type]
+    fused_rank = {h.chunk_id: h.rank for h in fused}
+    for h in reranked:
+        t4.add_row(str(h.rank), f"{h.rerank_score:.4f}",
+                   f"#{fused_rank.get(h.chunk_id, 0)}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:22], " ".join(h.text.split())[:60])
+    console.print(t4)
 
 
 @app.command("db")
