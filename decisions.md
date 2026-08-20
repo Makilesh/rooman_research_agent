@@ -375,3 +375,292 @@ glyph instead of terminating the process. Visibly degraded beats dead.
 **Revisit if:** never.
 **README line:** "Console output is forced to UTF-8, because arXiv text is full of
 characters that make a default Windows console raise mid-print."
+
+---
+
+## D-006 · Fetch by manifest; never commit the PDFs
+**Date:** 2026-08-20
+**Context:** The corpus is thirteen arXiv papers, ~25 MB of PDF.
+**Options:** (a) commit the PDFs; (b) commit a manifest and fetch on demand.
+**Decision:** (b). `data/manifest.yaml` is the committed artifact; `fetch` downloads.
+**Why:** Keeps the repository small enough to clone quickly, avoids redistributing
+someone else's paper, and makes the corpus exactly reproducible from one command. The
+manifest is also more informative than the files: it records why each paper earns its
+place, which is the part a reviewer actually wants.
+**Consequence:** A reviewer needs network access once. The fetcher waits three seconds
+between requests, sends a descriptive User-Agent, and skips files already present, so
+re-running is free and arXiv is not hammered.
+**Evidence:** Measured 2026-08-20 — 13/13 downloaded, 25.7 MB total, sha256 recorded
+per file, delays visible in the log, second run a complete no-op.
+**Revisit if:** arXiv availability ever becomes a problem, at which point the honest
+fix is a documented mirror, not a committed copy.
+**README line:** "The corpus is a version-pinned manifest rather than committed PDFs:
+one command reproduces it exactly, and no one else's paper gets redistributed."
+
+---
+
+## D-007 · Reading-order extraction with mass-weighted column detection
+**Date:** 2026-08-20
+**Context:** Naive `page.get_text()` on a two-column paper reads straight across the
+gutter, interleaving the columns into text that is fluent-looking and semantically
+destroyed — and that passes every automated check.
+**Options:** (a) `get_text()`; (b) `get_text(sort=True)`, which sorts by (y, x);
+(c) geometric block extraction with explicit column assignment.
+**Decision:** (c). Blocks are extracted with bounding boxes, full-width blocks split
+the page into bands, and within each band the entire left column is read before the
+right. (b) is *worse than useless* here: sorting by (y, x) is precisely the operation
+that interleaves columns.
+**The refinement that mattered, and how it was found:** the first implementation
+counted *blocks* either side of the midline. Measured against the real corpus it
+reported LoRA — a single-column ICLR paper — as two-column on 6 of 26 pages. Inspecting
+those pages showed the cause: a displayed equation shatters into a dozen tiny fragments
+(`max`, `Φ`, `(x,y)∈Z`) scattered around the midline, and block-counting reads that as
+a layout. Detection now weights by **character mass**, ignores blocks under 80
+characters, requires column-width geometry, and requires both columns to carry
+comparable weight.
+**Consequence, and a correction to the brief's premise:** measured across the corpus,
+only **2 of 13 papers are actually two-column** (BERT and DPR, both ACL/EMNLP style).
+The other eleven are single-column NeurIPS/ICLR papers. The brief assumed the whole
+corpus was two-column; it is not. The handling still earns its place — it is
+load-bearing for BERT and DPR, and BERT is the second-most-cited paper in the question
+set — but the scale of the problem was overstated and this record says so.
+**Evidence:** Column profile measured per paper. Junction inspection on DPR page 2:
+the left column ends *"...more specifically, we assume"* and the right column begins
+*"the extractive QA setting, in which..."* — the sentence continues correctly across
+the column break. Block side sequences are `LLLLLRRRRRRRRRRRRRR`, with no interleaving.
+**Revisit if:** a paper is added whose layout is three-column or rotated.
+**README line:** "Column order is decided by character mass, not block count: a
+displayed equation shatters into fragments either side of the midline and fools any
+block-counting heuristic into reordering a single-column page."
+
+---
+
+## D-008 · What extraction deliberately does not handle
+**Date:** 2026-08-20
+**Decision:** Equations, figure internals, and multi-page tables are accepted as poorly
+extracted. There is no OCR, now or ever.
+**Why:** Each would be a project of its own with a poor return here. A table rendered
+as `Batch Size 32 16 1 Sequence Length 512 256 128` is not useful evidence, and no
+amount of parser tuning makes it so — the fix is a table-aware extractor, which is
+listed under "with more time" rather than half-built. Chasing them would also risk the
+prose path, which is what every question in the set actually depends on.
+**Consequence:** Questions whose answer lives only inside a results table will retrieve
+the surrounding prose instead, and may abstain. That is the correct behaviour: an
+honest refusal beats a confident answer read out of mangled table cells.
+**Evidence:** Visible in the Step 3 gate dump — LoRA page 4 and CoT page 4 both show
+table-cell fragmentation, in an otherwise clean corpus.
+**Revisit if:** a table-aware extractor becomes worth its dependency.
+**README line:** "Equations, figures and multi-page tables extract poorly and are a
+documented limitation, not a bug being chased. There is no OCR path."
+
+---
+
+## D-009 · Chunk sizing: ~700-token children, ~2000-token parents, 15% overlap
+**Date:** 2026-08-20
+**Decision:** Children are grown paragraph-by-paragraph to ~700 tokens and cut only at
+paragraph boundaries; parents group consecutive children to ~2000 tokens; overlap is
+15% of the target, carried as whole paragraphs.
+**Why:** Fixed-size splits sever claims mid-sentence. Cutting at paragraph boundaries
+costs some size uniformity and buys chunks that are readable on their own — which
+matters doubly here, because a chunk is what a citation *points at*, and a reviewer
+will read it. Overlap exists so a claim spanning a boundary survives intact in at least
+one chunk rather than being severed by both. Sub-floor fragments are merged backwards
+rather than emitted, because a 30-token caption pollutes retrieval more than it helps.
+**Consequence:** Measured on this corpus: 720 children, 273 parents, token counts
+min 106 / median 657 / mean 628 / max 1021. Nothing exceeds the 1024-token encoder
+window, so no chunk is silently truncated — which would lose exactly the evidence a
+citation points at.
+**Evidence:** `index` asserts all three properties on every build and fails the command
+if any is violated.
+**Revisit if:** the encoder window changes, or the ablation shows parent expansion is
+not paying for itself.
+**README line:** "Chunks are cut at paragraph boundaries rather than fixed offsets,
+because a chunk is what a citation points at and a reviewer will read it."
+
+---
+
+## D-010 · Document-local chunk ids, plus a text fingerprint per chunk
+**Date:** 2026-08-20
+**Context:** Gold labels reference chunk ids. If ids move, the labels silently point at
+the wrong text and every downstream number is wrong with no visible symptom.
+**Options:** (a) a global counter (`c_0017`); (b) a hash of the text; (c) a
+document-local ordinal (`c_lora_0042`).
+**Decision:** (c), plus a `text_sha` recorded alongside every gold label.
+**Why:** A global counter renumbers every paper the moment a fourteenth is added — the
+exact silent-invalidation failure this is meant to prevent. A pure text hash is stable
+but unreadable, and an invented id would be indistinguishable from a real one in a
+prompt. A document-local ordinal is stable under corpus growth, readable in context
+(`[c_lora_0042]`), and makes a fabricated id obvious on sight.
+**The second half is the important half.** A stable id is not enough: re-chunking with
+different parameters keeps ids valid-looking while pointing at *different text*.
+Recording `text_sha` beside each label means evaluation can hard-fail on a stale label
+instead of quietly scoring against the wrong passage.
+**Consequence:** Ids are longer than the brief's `c_0017`. Worth it.
+**Evidence:** `test_chunk_ids_are_document_local_and_stable`,
+`test_text_sha_changes_when_the_text_changes`.
+**Revisit if:** never.
+**README line:** "Chunk ids are document-local so adding a paper cannot renumber the
+others, and every gold label records a text fingerprint so a stale label fails loudly
+instead of scoring against the wrong passage."
+
+---
+
+## D-011 · FTS5 over a Python BM25 library — and the tradeoff that actually bites
+**Date:** 2026-08-20
+**Decision:** SQLite FTS5 with `porter unicode61`, in the same file and transaction as
+the chunk metadata. See also [D-103], written before the corpus existed and confirmed
+by it.
+**Why:** Zero extra dependency, incrementally updatable, and — the part that matters
+operationally — triggers on `chunks` mirror every insert, update and delete into
+`chunks_fts` inside the same transaction, so the two indexes cannot disagree about what
+the corpus contains. The fixed `k1=1.2 / b=0.75` is a real limitation and an irrelevant
+one: they would never have been tuned on 720 chunks.
+**The real cost, confirmed on the corpus:** `unicode61` splits on non-alphanumerics, so
+`GPT-3` becomes `gpt` + `3`. Mitigated as planned — compound identifiers are emitted as
+quoted phrase queries, so `"GPT 3"` requires adjacency rather than matching any stray
+`3`. All query text is tokenised and rebuilt rather than passed through, because an
+unescaped quote, asterisk or a bare `NEAR` raises `OperationalError` mid-turn.
+**Consequence:** Sparse retrieval keeps a precision ceiling on alphanumeric identifiers.
+Step 6's ablation measures it rather than assuming it.
+**Evidence:** Six hostile inputs are executed against a real FTS5 table in
+`test_hostile_input_produces_a_valid_fts_query`. Live behaviour: the query "What rank
+does LoRA use for GPT-3?" compiles to `"rank" OR "LoRA" OR "use" OR "GPT 3"`.
+**Revisit if:** the sparse-only ablation row underperforms enough to matter — in which
+case a custom tokenizer, not `bm25s`, is the next move.
+**README line:** "Sparse retrieval is SQLite FTS5 BM25 in the same transaction as the
+chunk metadata, so the dense and sparse indexes cannot disagree about the corpus."
+
+---
+
+## D-012 · numpy sidecar over sqlite-vec
+**Date:** 2026-08-20
+**Decision:** Vectors in a float32 `.npy` file, with a `chunk_order` table mapping row
+index to chunk id.
+**Why:** `sqlite-vec` needs a loadable binary extension, which is disabled on some
+Python builds — and an install failure costs far more of the 30-point functionality
+block than a linear scan costs in milliseconds. At 720 chunks a 720x1024 dot product is
+sub-millisecond, and it is *exact*: an ANN index here would be the approximation, not
+the optimisation.
+**Consequence:** Two artifacts to keep in step. They are written in the same
+transaction, and `check_staleness` compares vector count against `chunk_order` rows and
+refuses to answer if they diverge.
+**Evidence:** 720 vectors x 1024 dims, peak 1.18 GiB VRAM, 12.6s to build.
+**Revisit if:** the corpus passes ~10k chunks.
+**README line:** "Vectors sit in a numpy sidecar rather than a SQLite extension: an
+install failure costs more than a linear scan over 720 chunks ever could."
+
+---
+
+## D-013 · Reciprocal Rank Fusion, k=60
+**Date:** 2026-08-20
+**Context:** Dense cosine and FTS5 BM25 produce scores on incomparable scales — cosine
+in [0,1], BM25 unbounded and corpus-dependent.
+**Options:** (a) min-max normalise then weighted sum; (b) z-score then sum; (c) RRF.
+**Decision:** RRF, k=60.
+**Why:** Normalisation makes the fusion weight corpus-dependent — retune per corpus or
+it silently degrades. RRF uses only rank position: no normalisation, one stable
+hyperparameter.
+**Consequence:** Discards score magnitude entirely. Acceptable precisely because the
+cross-encoder re-scores the fused candidates anyway.
+**Evidence:** `test_rrf_uses_rank_only_and_ignores_score_magnitude` asserts a
+999.0-scoring dense hit and a 0.0001-scoring sparse hit fuse to identical RRF scores.
+Live: dense and sparse agree on only 1 of 6 top results for "What rank does LoRA use for
+GPT-3?" — that disagreement is the whole point of fusing them.
+**Revisit if:** the corpus passes ~50k chunks, where rank saturation starts to matter.
+**README line:** "Rank-based fusion avoids score-scale mismatch between dense and sparse
+retrievers, and needs no corpus-specific weight to retune."
+
+---
+
+## D-014 · Cross-encoder reranking on the top-25
+**Date:** 2026-08-20
+**Decision:** `BAAI/bge-reranker-v2-m3`, fp16 on GPU, over the top-25 fused candidates,
+returning the top-6.
+**Why:** A bi-encoder embeds query and passage separately and never sees the interaction
+between their tokens; the cross-encoder restores it. Running it over the full corpus
+would be quadratic and pointless — the fused top-25 already contains what matters.
+**Evidence, measured on three held-out questions:** reranking improved the top-3 on
+**3 of 3**. The decisive case was *"What batch size and warmup schedule did BERT use for
+pre-training?"*, where RRF's #1 and #3 were both chunks from the **LoRA** paper — the
+adjacent-paper confusion this corpus was chosen to expose — and the cross-encoder
+placed BERT chunks in all three slots. On the DPO question it demoted a page of
+unreadable equation fragments out of the top-3 entirely.
+**Revisit if:** rerank latency becomes a problem at larger top-k.
+**README line:** "The cross-encoder earns its place on cross-paper confusions: on a BERT
+question, rank-fusion returned LoRA chunks at #1 and #3 and reranking replaced all
+three."
+
+---
+
+## D-110 · The double-sigmoid bug, and why the guard is permanent
+**Date:** 2026-08-20
+**Context:** The reranker is documented as emitting a logit, so the first implementation
+applied a sigmoid to map scores into [0,1].
+**What actually happened:** `sentence_transformers.CrossEncoder.predict()` already
+applies `Sigmoid()` by default. Squashing twice mapped the true range [0.000, 0.998]
+onto **[0.500, 0.731]**.
+**Why this was nearly invisible:** nothing errored. Scores still sorted, the pipeline
+still ran, and the top-6 still populated. The only symptom was that every passage looked
+about equally relevant — and the *first* thing anyone would do with that distribution is
+derive τ_high, τ_low and τ_verify from it. Every one of those thresholds would have been
+measured on a scale compressed into a third of its true range, and the routing built on
+them would have been confidently wrong.
+**How it was caught:** the top-6 for "What rank does LoRA use for GPT-3?" all scored
+between 0.71 and 0.73. That compression is arithmetically diagnostic — `sigmoid([0,1])`
+is exactly `[0.500, 0.731]`. A direct probe confirmed it: one relevant and two
+irrelevant passages scored `[0.9976, 0.0, 0.0]` through `predict()` and
+`[6.02, -11.02, -10.95]` with the activation forced to identity.
+**Decision:** Use `predict()` output directly, and assert at call time that
+`activation_fn` is `Sigmoid`.
+**Why assert rather than comment:** a library default is not a contract. If a future
+version returns raw logits, every threshold silently moves to the wrong scale — the
+assertion turns that into an immediate, legible failure.
+**Evidence:** Before: top-6 spanned 0.7115-0.7270. After: 0.9026-0.9792, with the
+bimodal separation the design depends on.
+**Revisit if:** never.
+**README line:** "The reranker's own sigmoid is asserted rather than assumed: squashing
+an already-squashed score compresses [0, 1] into [0.5, 0.73], breaks nothing visibly,
+and would have made every measured threshold wrong."
+
+---
+
+## D-111 · The corpus fingerprint hashes extracted text, not source bytes
+**Date:** 2026-08-20
+**Context:** The fingerprint identifies "this corpus, chunked and embedded this way".
+It invalidates the semantic answer cache and warns a session that its stored citations
+may no longer mean what they meant.
+**What went wrong:** it was first computed over the PDF sha256 plus the chunk config.
+Improving the extractor changed the text of every chunk while leaving the source bytes
+untouched — so the fingerprint did not move, and nothing downstream knew the corpus had
+changed. Confirmed live: two consecutive builds over materially different extracted text
+both reported `a60700ff1b9dfc99`.
+**Decision:** Hash the extracted text per document instead. Catches a revised source
+*and* a revised parser.
+**Consequence:** Any change to `ingest.py` invalidates the cache, which is correct and
+occasionally inconvenient. The fingerprint moved to `f068f95758f6dcae` on the first
+build after the fix.
+**Evidence:** The two identical fingerprints across different text, above.
+**Revisit if:** never.
+**README line:** "The corpus fingerprint hashes extracted text rather than source bytes,
+because improving the parser changes every chunk while leaving the PDFs byte-identical."
+
+---
+
+## D-112 · A `pages` table, so ingest and index are separable
+**Date:** 2026-08-20
+**Context:** The specified schema goes straight from `documents` to `chunks`.
+**Decision:** Added a `pages` table holding extracted per-page text, column count and
+block count.
+**Why:** Three things need it. `ingest` and `index` become genuinely separate commands
+rather than one pass that re-parses thirteen PDFs whenever the chunk config moves. The
+corpus fingerprint (D-111) needs the extracted text to hash. And the gold-label
+validation tool at Step 6 must show a label against *the text the pipeline actually
+saw* — not against the PDF, and never against anyone's memory of the paper, which the
+project's own rules forbid.
+**Consequence:** One table beyond the specified schema, and ~1.4 MB of duplicated text
+in the database. Flagged rather than slipped in.
+**Evidence:** `ingest` and `index` run independently; re-indexing after a config change
+takes 12.6s and re-parses nothing.
+**Revisit if:** the corpus grows enough for the duplication to matter.
+**README line:** "Extracted page text is persisted, so gold labels are always validated
+against the text the pipeline actually saw rather than against the PDF."

@@ -52,6 +52,21 @@ _MIGRATIONS: tuple[tuple[int, str, str], ...] = (
             text        TEXT NOT NULL
         )
     """),
+    # Extracted page text, kept so `ingest` and `index` are separate commands rather
+    # than one pass that re-parses every PDF whenever the chunk config changes. It is
+    # also what the gold-label validation tool reads, so a label is always checked
+    # against the text the pipeline actually saw -- not against the PDF, and never
+    # against anyone's memory of the paper.
+    (1, "pages", """
+        CREATE TABLE IF NOT EXISTS pages (
+            doc_id    TEXT NOT NULL REFERENCES documents(doc_id) ON DELETE CASCADE,
+            page_no   INTEGER NOT NULL,
+            n_columns INTEGER NOT NULL,
+            n_blocks  INTEGER NOT NULL,
+            text      TEXT NOT NULL,
+            PRIMARY KEY (doc_id, page_no)
+        )
+    """),
     (1, "idx_chunks_doc", "CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, level, ord)"),
     (1, "idx_chunks_parent", "CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id)"),
 

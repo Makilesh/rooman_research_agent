@@ -14,7 +14,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import db
+from . import corpus, db
+from . import ingest as ingest_mod
+from . import index as index_mod
+from . import rerank as rerank_mod
+from . import retrieve
 from .config import Config
 from .llm import LLMClient, OllamaProvider
 
@@ -224,6 +228,291 @@ def budget() -> None:
             "\n[dim]No Gemini key configured, so the figures above are limits rather"
             " than live balances.\nThe Ollama path is unlimited and needs no key.[/dim]"
         )
+
+
+@app.command()
+def fetch(
+    audit: bool = typer.Option(
+        False, "--audit", help="Re-check manifest titles and authors against the arXiv API."
+    ),
+) -> None:
+    """Download every manifest paper from arXiv, politely and reproducibly."""
+    cfg = Config.load()
+    entries = corpus.load_manifest(cfg)
+    console.print(f"Manifest: {len(entries)} documents -> {cfg.sources_dir}\n")
+
+    if audit:
+        console.rule("[bold]Manifest audit against the live arXiv API")
+        live = {m["arxiv_id"]: m for m in corpus.fetch_metadata(
+            [e.arxiv_id for e in entries], cfg.arxiv_user_agent, cfg.fetch_timeout_s
+        )}
+        mismatches = 0
+        for e in entries:
+            m = live.get(e.arxiv_id)
+            if m is None:
+                _fail(e.arxiv_id, "not returned by the API")
+                mismatches += 1
+            elif m["title"] != e.title or m["first_author"] != e.first_author:
+                _fail(e.arxiv_id, f"manifest says {e.title!r} / {e.first_author!r}; "
+                                  f"API says {m['title']!r} / {m['first_author']!r}")
+                mismatches += 1
+            else:
+                _ok(e.arxiv_id, f"{e.first_author} — {e.title[:52]}")
+        console.print()
+        if mismatches:
+            raise typer.Exit(1)
+
+    results = list(corpus.fetch_corpus(cfg, entries, on_event=console.print))
+
+    console.print()
+    t = Table(show_edge=False)
+    for col, just in (("doc_id", "left"), ("arxiv id", "left"), ("bytes", "right"),
+                      ("sha256 (first 16)", "left"), ("state", "left")):
+        t.add_column(col, justify=just)  # type: ignore[arg-type]
+    for r in results:
+        t.add_row(r.entry.doc_id, r.entry.arxiv_id, f"{r.n_bytes:,}",
+                  r.sha256[:16], "cached" if r.skipped else "downloaded")
+    console.print(t)
+
+    empty = [r for r in results if r.n_bytes == 0]
+    if empty:
+        _fail(f"{len(empty)} zero-byte file(s)", ", ".join(r.entry.arxiv_id for r in empty))
+        raise typer.Exit(1)
+    _ok(f"{len(results)} document(s) present", "re-running this command is a no-op")
+
+
+@app.command()
+def ingest(
+    page: int = typer.Option(3, "--page", help="Which page to dump for the reading-order gate."),
+    chars: int = typer.Option(600, "--chars", help="How much of that page to print."),
+    quiet: bool = typer.Option(False, "--quiet", help="Skip the text dump."),
+) -> None:
+    """Extract text and page metadata from every fetched source.
+
+    Prints the first N characters of one page per paper. That dump is the gate, and
+    it cannot be automated away: interleaved columns produce text that passes every
+    automated check while being semantically destroyed. A human has to read it.
+    """
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+    entries = corpus.load_manifest(cfg)
+
+    stats = []
+    for entry in entries:
+        path = cfg.sources_dir / entry.filename
+        if not path.exists():
+            _fail(entry.doc_id, f"{path.name} missing — run `fetch` first")
+            raise typer.Exit(1)
+
+        pages = ingest_mod.extract(path)
+        digest = corpus.sha256_file(path)
+        profile = ingest_mod.column_profile(pages)
+
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", (entry.doc_id,))
+        db.insert(conn, "documents", {
+            "doc_id": entry.doc_id, "title": entry.title, "arxiv_id": entry.arxiv_id,
+            "path": str(path), "source_url": entry.source_url, "sha256": digest,
+            "n_pages": len(pages),
+            "extracted_chars": sum(len(p.text) for p in pages),
+        })
+        db.insert_many(conn, "pages", [
+            {"doc_id": entry.doc_id, "page_no": p.number, "n_columns": p.n_columns,
+             "n_blocks": p.n_blocks, "text": p.text}
+            for p in pages
+        ])
+        conn.commit()
+        stats.append((entry, pages, profile, digest))
+
+    t = Table(show_edge=False)
+    for col, just in (("doc_id", "left"), ("pages", "right"), ("chars", "right"),
+                      ("chars/page", "right"), ("layout", "left"), ("empty pages", "right")):
+        t.add_column(col, justify=just)  # type: ignore[arg-type]
+    for entry, pages, profile, _ in stats:
+        n_two = profile.get(2, 0)
+        layout = (f"TWO-COLUMN ({n_two}/{len(pages)})" if n_two > len(pages) / 2
+                  else f"single ({profile.get(1, 0)}/{len(pages)})"
+                       + (f", {n_two} mixed" if n_two else ""))
+        total = sum(len(p.text) for p in pages)
+        empty = sum(1 for p in pages if len(p.text) < 40)
+        t.add_row(entry.doc_id, str(len(pages)), f"{total:,}",
+                  f"{total // max(len(pages), 1):,}", layout, str(empty) if empty else "-")
+    console.print(t)
+
+    # -- automated assertions ------------------------------------------------
+    console.print()
+    problems = 0
+    for entry, pages, _, _ in stats:
+        blank = [p.number for p in pages if len(p.text) < 40]
+        if len(blank) > len(pages) * 0.2:
+            _fail(entry.doc_id, f"{len(blank)} near-empty pages — extraction may have failed")
+            problems += 1
+    if problems == 0:
+        _ok("every document extracted text on the large majority of its pages")
+
+    if quiet:
+        return
+
+    console.print()
+    console.rule(f"[bold]READING-ORDER GATE — page {page}, first {chars} characters")
+    console.print(
+        "[dim]Read these. Interleaved columns look fluent and are semantically "
+        "destroyed.\nWhat you are checking: does each passage continue into the next, "
+        "or does it jump mid-sentence?[/dim]\n"
+    )
+    for entry, pages, _, _ in stats:
+        target = next((p for p in pages if p.number == page), None)
+        if target is None:
+            _warn(entry.doc_id, f"has no page {page}")
+            continue
+        console.print(f"[bold cyan]── {entry.doc_id} · {entry.arxiv_id} · "
+                      f"page {page} · read as {target.n_columns} column(s) ──[/bold cyan]")
+        console.print(target.text[:chars].replace("\n", " ⏎ "))
+        console.print()
+
+
+@app.command("index")
+def index_cmd() -> None:
+    """Chunk every ingested document, embed the children, build both indexes."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stats = index_mod.build(cfg, conn, on_event=console.print)
+
+    console.print()
+    console.print(f"  documents        {stats.n_documents}")
+    console.print(f"  child chunks     {stats.n_children}")
+    console.print(f"  parent chunks    {stats.n_parents}")
+    console.print(f"  dimensions       {stats.dims}")
+    console.print(f"  device           {stats.device}")
+    console.print(f"  peak VRAM        {stats.peak_vram_gb:.2f} GiB")
+    console.print(f"  elapsed          {stats.seconds:.1f}s "
+                  f"({stats.chunks_per_second:.1f} chunks/sec)")
+    console.print(f"  fingerprint      {stats.fingerprint}")
+
+    rows = db.all_rows(conn, "SELECT token_count, page_start FROM chunks WHERE level = 0")
+    counts = sorted(r["token_count"] for r in rows)
+    console.print()
+    console.print(f"  child tokens     min {counts[0]}  median {counts[len(counts)//2]}  "
+                  f"max {counts[-1]}  mean {sum(counts)/len(counts):.0f}")
+
+    # Assertions the spec requires of every chunk.
+    problems = 0
+    null_pages = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE page_start IS NULL")
+    if null_pages:
+        _fail(f"{null_pages} chunks have no page_start", "citations depend on it")
+        problems += 1
+    tiny = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE level = 0 AND token_count < ?",
+                     (cfg.min_chunk_tokens,))
+    over = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE level = 0 AND token_count > ?",
+                     (cfg.embed_max_tokens,))
+    console.print()
+    if null_pages == 0:
+        _ok("every chunk has a page_start")
+    if tiny:
+        _warn(f"{tiny} child chunk(s) below the {cfg.min_chunk_tokens}-token floor")
+    else:
+        _ok(f"no child chunk below the {cfg.min_chunk_tokens}-token floor")
+    if over:
+        _fail(f"{over} child chunk(s) exceed the encoder window ({cfg.embed_max_tokens})",
+              "they would be silently truncated, losing cited evidence")
+        problems += 1
+    else:
+        _ok(f"no child chunk exceeds the {cfg.embed_max_tokens}-token encoder window")
+
+    if problems:
+        raise typer.Exit(1)
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="The question to retrieve for."),
+    retrieve_only: bool = typer.Option(
+        False, "--retrieve-only", help="Show retrieval only; no generation."
+    ),
+    k: int = typer.Option(10, "--k", help="How many results to show per retriever."),
+) -> None:
+    """Retrieve for a question. Generation arrives at Step 7."""
+    if not retrieve_only:
+        console.print("[yellow]Only --retrieve-only is implemented so far "
+                      "(generation lands at Step 7).[/yellow]")
+        raise typer.Exit(1)
+
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    model = index_mod.load_embedder(cfg)
+    vectors = index_mod.load_vectors(cfg)
+    qvec = retrieve.embed_query(model, question)
+
+    dense = retrieve.dense_search(conn, qvec, vectors, cfg, k=k)
+    sparse = retrieve.sparse_search(conn, question, cfg, k=k)
+
+    console.print(f"\n[bold]{question}[/bold]")
+    console.print(f"[dim]FTS5 MATCH: {retrieve.build_fts_query(question)}[/dim]\n")
+
+    t = Table(show_edge=False, title="DENSE — bge-m3 cosine", title_justify="left")
+    for c, j in (("#", "right"), ("score", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in dense:
+        t.add_row(str(h.rank), f"{h.dense_score:.4f}", h.doc_id, str(h.page_start),
+                  (h.section or "")[:24], " ".join(h.text.split())[:70])
+    console.print(t)
+    console.print()
+
+    t2 = Table(show_edge=False, title="SPARSE — SQLite FTS5 bm25()", title_justify="left")
+    for c, j in (("#", "right"), ("score", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t2.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in sparse:
+        t2.add_row(str(h.rank), f"{h.sparse_score:.3f}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:24], " ".join(h.text.split())[:70])
+    console.print(t2)
+
+    overlap = {h.chunk_id for h in dense} & {h.chunk_id for h in sparse}
+    console.print(f"\n[dim]{len(overlap)}/{k} chunks appear in both lists — "
+                  f"the disagreement is what hybrid retrieval exists to exploit.[/dim]")
+
+    # -- fusion and reranking ------------------------------------------------
+    wide_dense = retrieve.dense_search(conn, qvec, vectors, cfg)
+    wide_sparse = retrieve.sparse_search(conn, question, cfg)
+    fused = retrieve.reciprocal_rank_fusion(wide_dense, wide_sparse, cfg)
+
+    console.print()
+    t3 = Table(show_edge=False, title_justify="left",
+               title=f"HYBRID — RRF (k={cfg.rrf_k}), top 6 of {len(fused)} fused")
+    for c, j in (("#", "right"), ("rrf", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t3.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in fused[:6]:
+        t3.add_row(str(h.rank), f"{h.rrf_score:.5f}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:22], " ".join(h.text.split())[:64])
+    console.print(t3)
+
+    model_rr = rerank_mod.load_reranker(cfg)
+    reranked = rerank_mod.rerank(model_rr, question, fused, cfg)
+
+    console.print()
+    t4 = Table(show_edge=False, title_justify="left",
+               title="HYBRID + CROSS-ENCODER RERANK")
+    for c, j in (("#", "right"), ("score", "right"), ("was", "right"),
+                 ("paper", "left"), ("page", "right"), ("section", "left"),
+                 ("text", "left")):
+        t4.add_column(c, justify=j)  # type: ignore[arg-type]
+    fused_rank = {h.chunk_id: h.rank for h in fused}
+    for h in reranked:
+        t4.add_row(str(h.rank), f"{h.rerank_score:.4f}",
+                   f"#{fused_rank.get(h.chunk_id, 0)}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:22], " ".join(h.text.split())[:60])
+    console.print(t4)
 
 
 @app.command("db")
