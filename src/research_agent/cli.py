@@ -825,6 +825,11 @@ def answer_all(
     db.migrate(conn)
     label_set = labels_mod.load(cfg)
 
+    # Same reason as chat-eval: a cache that persists between runs makes the run
+    # measure its own history rather than the pipeline (decisions.md D-125).
+    conn.execute("DELETE FROM answer_cache")
+    conn.commit()
+
     wanted = set(only.split(",")) if only else None
     items = [i for i in label_set.items if not wanted or i.id in wanted]
 
@@ -866,7 +871,9 @@ def answer_all(
     for c in ("id", "class", "expected", "actual") + numeric:
         t.add_column(c, justify="right" if c in numeric else "left")
     for r in rows:
-        mark = "" if r["actual"].startswith(r["expected"][:6]) else "  <-- MISMATCH"
+        ok = (r["actual"] in {"refuse", "abstain"} if r["expected"] == "abstain"
+              else r["actual"] == r["expected"])
+        mark = "" if ok else "  <-- MISMATCH"
         t.add_row(r["id"], r["class"], r["expected"], r["actual"] + mark,
                   str(r["n_sent"]), str(r["n_cites"]), str(r["papers"]),
                   str(r["verified"]), str(r["loops"]), str(r["subs"]), str(r["ms"]))
@@ -877,7 +884,9 @@ def answer_all(
     schema_ok = sum(1 for r in rows if r["schema_ok"])
     no_invented = sum(1 for r in rows if r["invented"] == 0)
     controls = [r for r in rows if r["expected"] == "abstain"]
-    controls_ok = sum(1 for r in controls if r["actual"] == "abstain")
+    # Refusing on the score and abstaining after synthesis are different mechanisms
+    # with the same correct outcome: no answer, no citations.
+    controls_ok = sum(1 for r in controls if r["actual"] in {"refuse", "abstain"})
     refusals_clean = all(r["n_cites"] == 0 for r in rows if r["actual"] == "abstain")
 
     console.print()

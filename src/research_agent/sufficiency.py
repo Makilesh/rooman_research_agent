@@ -283,7 +283,6 @@ def _retrieve_sub_questions(conn: Connection, cfg: Config, models,
     against the parent query would undo the decomposition: the whole point is that a
     passage answering one part need not resemble the composite question at all.
     """
-    _, _, reranker = models
     merged: dict[str, Hit] = {}
 
     for sub in sub_questions:
