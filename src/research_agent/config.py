@@ -77,7 +77,16 @@ class Config:
     ollama_model: str = "llama3.1:8b"
     # Sequential 14B-class: only loadable once the encoders are freed.
     ollama_model_large: str = "qwen2.5:14b"
-    ollama_timeout_s: float = 180.0
+    ollama_timeout_s: float = 300.0
+    # Ollama's default context window is 4096 tokens and it TRUNCATES SILENTLY above
+    # it -- no error, no warning, just an answer written from half the sources. The
+    # context here is ~6 parent passages, so this must be set explicitly and the
+    # actual prompt_eval_count checked against it on every call.
+    ollama_num_ctx: int = 8192
+    # Keep the model resident between calls. With the encoders holding ~2.2 GB,
+    # Ollama's scheduler otherwise evicts and reloads a 5.5 GB model repeatedly, and
+    # a reload costs ~30s of pure disk I/O per turn.
+    ollama_keep_alive: str = "15m"
     gemini_key_env_prefix: str = "GEMINI_API_KEY_"
     gemini_max_keys: int = 3
     gemini_timeout_s: float = 60.0

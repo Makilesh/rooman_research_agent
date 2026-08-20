@@ -89,18 +89,31 @@ class Provider(Protocol):
         """Return (raw_text, prompt_tokens, completion_tokens)."""
 
 
+class ContextTruncated(RuntimeError):
+    """The prompt was longer than the model's context window.
+
+    Ollama does not error on this -- it silently drops the overflow and answers from
+    what is left. For a citation system that is catastrophic and invisible: the model
+    writes confident, well-cited prose from a fraction of the evidence, every check
+    passes, and the citations point at passages it may never have seen.
+    """
+
+
 class OllamaProvider:
     """Local, unlimited, and the default. Driven over HTTP, never by shelling out.
 
-    `ollama list` was observed to hang past 120s on this machine while
-    `GET /api/tags` returned instantly, so every interaction here is an HTTP call
-    with a real timeout (decisions.md D-105).
+    `ollama list` never returned on this machine because the CLI starts a server that
+    inherits and holds the stdout pipe, while `GET /api/tags` answers instantly. Every
+    interaction here is an HTTP call with a real timeout (decisions.md D-105).
     """
 
     name = "ollama"
 
-    def __init__(self, host: str, transport: Callable[..., Any] | None = None) -> None:
+    def __init__(self, host: str, transport: Callable[..., Any] | None = None,
+                 num_ctx: int | None = None, keep_alive: str | None = None) -> None:
         self.host = host.rstrip("/")
+        self.num_ctx = num_ctx
+        self.keep_alive = keep_alive
         # Injectable so tests exercise the full path with zero network.
         self._transport = transport
 
@@ -132,16 +145,30 @@ class OllamaProvider:
     ) -> tuple[str, int | None, int | None]:
         payload: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False}
         if schema is not None:
-            # Ollama constrains generation to a JSON schema via `format`. This is
-            # what makes the citation contract structurally hard to violate rather
-            # than something a retry loop has to clean up after.
+            # Ollama constrains generation to a JSON schema via `format`. Besides
+            # making the citation contract structurally hard to violate, it is
+            # measurably *faster* than free generation here -- an unconstrained call
+            # has no stop condition and rambles until it times out.
             payload["format"] = schema
+        if self.num_ctx:
+            payload.setdefault("options", {})["num_ctx"] = self.num_ctx
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
+
         body = self._post("/api/generate", payload, timeout_s)
-        return (
-            body.get("response", ""),
-            body.get("prompt_eval_count"),
-            body.get("eval_count"),
-        )
+        prompt_tokens = body.get("prompt_eval_count")
+
+        # The guard that catches silent truncation. Ollama reports how many prompt
+        # tokens it actually evaluated; if that has pinned to the window size, the
+        # rest of the evidence was thrown away without an error.
+        if self.num_ctx and prompt_tokens and prompt_tokens >= self.num_ctx:
+            raise ContextTruncated(
+                f"{model} evaluated {prompt_tokens} prompt tokens against a context "
+                f"window of {self.num_ctx}: the prompt was truncated and the answer "
+                f"would be written from incomplete evidence. Raise OLLAMA_NUM_CTX or "
+                f"reduce CONTEXT_TOP_N."
+            )
+        return body.get("response", ""), prompt_tokens, body.get("eval_count")
 
 
 class GeminiProvider:
@@ -345,7 +372,11 @@ class LLMClient:
         self.ledger = Ledger(self.conn, self.now)
         self.cache = DiskCache(self.cfg.llm_cache_dir)
         if self.ollama is None:
-            self.ollama = OllamaProvider(self.cfg.ollama_host)
+            self.ollama = OllamaProvider(
+                self.cfg.ollama_host,
+                num_ctx=self.cfg.ollama_num_ctx,
+                keep_alive=self.cfg.ollama_keep_alive,
+            )
         if self.gemini is None:
             self.gemini = GeminiProvider()
 

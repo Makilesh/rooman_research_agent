@@ -198,15 +198,36 @@ was never released, so the working pin is not the obvious one."
 **Context:** `doctor` must report which local models are available.
 **Decision:** All Ollama interaction -- capability probing included -- goes through
 `http://127.0.0.1:11434`, never through the `ollama` executable.
-**Why:** Empirically, on this machine `ollama list` hung past a 120-second timeout
-while `GET /api/tags` returned the full model list in well under a second. Shelling
-out to a CLI that can block indefinitely inside `doctor` would make the first
-command a reviewer runs appear to hang. The HTTP path also takes an explicit
-timeout, which a subprocess does not without extra machinery.
-**Consequence:** `doctor` cannot report anything the API does not expose. It does
-expose everything needed: model list, sizes, and load state.
-**Evidence:** Step 0 probe, 2026-08-20 -- `ollama list` backgrounded at 120s with no
-output; `GET /api/tags` returned six models immediately.
+**Why:** On this machine `ollama list` never returned, while `GET /api/tags` gave the
+full model list in well under a second.
+
+**CORRECTED 2026-08-20, after the backgrounded probe finally completed.** My first
+diagnosis here was wrong and is left visible rather than quietly rewritten. I recorded
+that `ollama list` "hung past 120 seconds". It did not: it printed the model table
+within about three seconds. What actually happened is worse, and is the real argument
+for this decision.
+
+Ollama was not running, so the CLI **started the server as a child process**. That
+server inherited the command's stdout pipe and never exited — it kept writing to it
+for hours (update-checker lines at 16:04, 17:04, 18:04, 19:04). The data arrived
+immediately; the *pipe* never closed, so the shell never saw EOF and the command never
+returned.
+
+That distinction matters. "Slow command" is solved by a longer timeout. "A subprocess
+silently spawns a daemon that holds your stdout open indefinitely" is not solved by a
+timeout at all — the timeout fires, the caller moves on, and a long-lived process is
+left attached to a pipe nobody is reading. Inside `doctor`, the first command a
+reviewer runs, that is a genuinely bad failure. An HTTP request has none of these
+properties: it has a real timeout, it spawns nothing, and it cannot leave anything
+behind.
+**Consequence:** `doctor` cannot report anything the API does not expose. It exposes
+everything needed: model list, sizes, and load state. It also means `doctor` reports
+Ollama as unreachable when the server is not already running, rather than starting one
+as a side effect — which is the correct behaviour for a diagnostic command.
+**Evidence:** Step 0 probe, 2026-08-20. `ollama list` was backgrounded at 120s with no
+output and completed only hours later; its captured log shows the model table printed
+at 16:03:09 followed by Ollama server startup lines and hourly update-checker output on
+the same pipe. `GET /api/tags` returned six models immediately. Ollama version 0.16.0.
 **Revisit if:** a future capability is only reachable through the CLI.
 **README line:** "Ollama is driven over its HTTP API rather than by shelling out, so
 every probe has a real timeout and `doctor` can never hang."

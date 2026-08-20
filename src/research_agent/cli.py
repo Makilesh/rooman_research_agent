@@ -9,19 +9,23 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
+from dataclasses import replace
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from . import answer as answer_mod
 from . import corpus, db, evaluate, report
+from . import verify as verify_mod
 from . import ingest as ingest_mod
 from . import labels as labels_mod
 from . import index as index_mod
 from . import rerank as rerank_mod
 from . import retrieve
 from .config import Config
-from .llm import LLMClient, OllamaProvider
+from .llm import LLMClient, OllamaProvider, QuotaExhausted
 
 # Windows consoles default to cp1252, which cannot encode box-drawing characters,
 # em dashes, or the accented author names and mathematical symbols that arXiv text
@@ -438,6 +442,69 @@ def index_cmd() -> None:
         raise typer.Exit(1)
 
 
+def _answer_once(cfg: Config, question: str, provider: str | None,
+                 save: str | None, show_retrieval: bool):
+    """Retrieve, synthesise, verify, persist, render. One turn, end to end."""
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    embedder = index_mod.load_embedder(cfg)
+    vectors = index_mod.load_vectors(cfg)
+    reranker = rerank_mod.load_reranker(cfg)
+
+    dense = retrieve.dense_search(
+        conn, retrieve.embed_query(embedder, question), vectors, cfg)
+    sparse = retrieve.sparse_search(conn, question, cfg)
+    fused = retrieve.reciprocal_rank_fusion(dense, sparse, cfg)
+    top = rerank_mod.rerank(reranker, question, fused, cfg)
+    # Retrieval wants precision, synthesis wants context: answer over the parent
+    # passages the winning children came from.
+    context_hits = retrieve.expand_to_parents(conn, top)
+
+    if show_retrieval:
+        t = Table(show_edge=False, title_justify="left", title="CONTEXT")
+        for c, j in (("#", "right"), ("rerank", "right"), ("chunk", "left"),
+                     ("paper", "left"), ("page", "right")):
+            t.add_column(c, justify=j)  # type: ignore[arg-type]
+        for h in context_hits:
+            t.add_row(str(h.rank), f"{h.rerank_score:.4f}" if h.rerank_score else "-",
+                      h.chunk_id, h.doc_id, str(h.page_start))
+        console.print(t)
+        console.print()
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    try:
+        result = answer_mod.synthesise(cfg, client, question, context_hits,
+                                       provider=provider)
+    except answer_mod.InventedCitation as exc:
+        _fail("fabricated citation", str(exc))
+        raise typer.Exit(1)
+    except QuotaExhausted as exc:
+        _fail("quota exhausted", str(exc))
+        raise typer.Exit(1)
+
+    result = verify_mod.verify_answer(cfg, reranker, result)
+
+    route = "refuse" if result.is_refusal else "answer"
+    session = answer_mod.ensure_session(
+        conn, f"s_ask_{uuid.uuid4().hex[:8]}", index_mod.load_fingerprint(conn))
+    turn_id = answer_mod.persist(conn, result, session, ord_=1, route=route)
+    result = replace(result, turn_id=turn_id)
+
+    console.print(report.render_answer_markdown(result))
+
+    if save:
+        md, js = report.write_answer(cfg, result, save)
+        _ok(f"wrote {md.relative_to(cfg.repo_root)} and {js.name}")
+    return result
+
+
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="The question to retrieve for."),
@@ -445,14 +512,17 @@ def ask(
         False, "--retrieve-only", help="Show retrieval only; no generation."
     ),
     k: int = typer.Option(10, "--k", help="How many results to show per retriever."),
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    save: str = typer.Option(None, "--save", help="Write outputs/answers/<id>.{md,json}."),
+    show_retrieval: bool = typer.Option(
+        False, "--show-retrieval", help="Also print the retrieval tables."
+    ),
 ) -> None:
-    """Retrieve for a question. Generation arrives at Step 7."""
-    if not retrieve_only:
-        console.print("[yellow]Only --retrieve-only is implemented so far "
-                      "(generation lands at Step 7).[/yellow]")
-        raise typer.Exit(1)
-
+    """Ask a question and get a cited answer, or an explicit refusal."""
     cfg = Config.load()
+    if not retrieve_only:
+        _answer_once(cfg, question, provider, save, show_retrieval)
+        return
     conn = db.connect(cfg)
     db.migrate(conn)
 
