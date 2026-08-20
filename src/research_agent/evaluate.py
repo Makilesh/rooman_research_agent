@@ -356,3 +356,107 @@ def _conversation_turn_ones(cfg: Config) -> list[GoldItem]:
             expected_facts=[],
         ))
     return out
+
+
+# ---------------------------------------------------------------------------
+#  Generation-dependent metrics
+# ---------------------------------------------------------------------------
+@dataclass
+class GenerationMetrics:
+    """Everything that needs a model to produce. Labelled as such everywhere.
+
+    Kept separate from the retrieval metrics on purpose: retrieval numbers are
+    model-independent and reproducible on demand, while everything here moves with
+    whichever model served the run. Mixing them in one table would let a synthesis
+    model's variance masquerade as a retrieval result.
+    """
+
+    n_items: int = 0
+    schema_valid: int = 0
+    invented_citations: int = 0
+    sentences_total: int = 0
+    sentences_verified: int = 0
+    controls_total: int = 0
+    controls_correct: int = 0
+    refusals_with_citations: int = 0
+    fact_coverage: list[float] = field(default_factory=list)
+    multi_hop_papers: list[int] = field(default_factory=list)
+    latencies: list[int] = field(default_factory=list)
+    routes: list[tuple[str, str]] = field(default_factory=list)   # (expected, actual)
+    per_item: list[dict] = field(default_factory=list)
+
+    @property
+    def citation_precision(self) -> float:
+        """Share of CITED sentences whose evidence supports them.
+
+        The denominator is sentences carrying at least one citation, not all
+        sentences. Uncited sentences are dropped before rendering, so including them
+        would divide by a population that never reaches the reader.
+        """
+        return (self.sentences_verified / self.sentences_total
+                if self.sentences_total else float("nan"))
+
+    @property
+    def abstention_accuracy(self) -> float:
+        return (self.controls_correct / self.controls_total
+                if self.controls_total else float("nan"))
+
+    @property
+    def mean_fact_coverage(self) -> float:
+        return float(np.mean(self.fact_coverage)) if self.fact_coverage else float("nan")
+
+    @property
+    def route_accuracy(self) -> float:
+        return (sum(1 for e, a in self.routes if _route_ok(e, a)) / len(self.routes)
+                if self.routes else float("nan"))
+
+    def latency(self, pct: float) -> float:
+        return float(np.percentile(self.latencies, pct)) if self.latencies else float("nan")
+
+    def confusion(self) -> dict[tuple[str, str], int]:
+        out: dict[tuple[str, str], int] = {}
+        for pair in self.routes:
+            out[pair] = out.get(pair, 0) + 1
+        return out
+
+
+def _route_ok(expected: str, actual: str) -> bool:
+    """Refusing on score and abstaining after synthesis are different mechanisms with
+    the same correct outcome: no answer, no citations."""
+    if expected in {"refuse", "abstain"}:
+        return actual in {"refuse", "abstain"}
+    return expected == actual
+
+
+def fact_coverage(answer, expected_facts: Sequence[str]) -> float:
+    """Share of expected keywords appearing in the answer text.
+
+    Case-insensitive substring match, stated plainly because the choice matters: a
+    stricter token match would penalise "r = 4" against "a rank of 4", and a looser
+    one would credit coincidence. Substring is the honest middle, and it is reported
+    as what it is rather than as semantic coverage.
+    """
+    if not expected_facts or answer is None:
+        return float("nan")
+    text = " ".join(s.text for s in answer.sentences).lower()
+    return sum(1 for f in expected_facts if f.lower() in text) / len(expected_facts)
+
+
+def ledger_summary(conn: Connection) -> dict:
+    """Per-turn LLM cost, split by ladder, straight from the durable ledger."""
+    rows = db.all_rows(conn, """
+        SELECT ladder, purpose, COUNT(*) n,
+               SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END) cached
+        FROM llm_calls GROUP BY ladder, purpose
+    """)
+    total = sum(r["n"] for r in rows)
+    cached = sum(r["cached"] or 0 for r in rows)
+    by_ladder: dict[str, int] = {}
+    for r in rows:
+        by_ladder[r["ladder"] or "none"] = by_ladder.get(r["ladder"] or "none", 0) + r["n"]
+    return {
+        "total": total, "cached": cached,
+        "cache_hit_rate": cached / total if total else 0.0,
+        "by_ladder": by_ladder,
+        "by_purpose": {r["purpose"]: r["n"] for r in rows},
+    }

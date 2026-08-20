@@ -1516,3 +1516,236 @@ rule. That is the single most likely thing to fix it.
 **README line:** "Adding the router made one false-premise question worse: a low
 retrieval score means both 'unanswerable' and 'unanswerable as asked', and one number
 cannot distinguish them."
+
+---
+
+## D-131 · The two prompt fixes: one worked, one did not, and both are reported
+**Date:** 2026-08-20
+**Context:** Phase 5 ended with two named gaps and I was asked to fix both before the
+full evaluation.
+
+**Fix 1 — cross-document synthesis (rule 6).** The synthesis prompt never asked for
+it. Added a rule requiring that a comparative question be answered from both papers
+when both are in context, plus a worked example.
+**Outcome: it works, and it is not reliable.** On `q07` it produced the first genuine
+multi-hop answer in the project — QLoRA's NF4, Double Quantization and the 780GB→48GB
+figure alongside LoRA's 10,000x trainable-parameter reduction, citing both papers. On
+the full evaluation run the same question averaged **1.00 papers per multi-hop
+answer** again. Same code, same corpus, different run.
+
+**Fix 2 — aligning the judge with the attribution rule.** The judge already caught
+"right topic, wrong paper" but not the mirror case, "right paper, wrong topic", which
+is what `q11` actually is.
+**Outcome: partially worked.** The judge now correctly reports insufficiency and
+relaxation fires — `q11` went from `loops=0` to `loops=2`, exactly the intended
+behaviour. But it still refuses, and the refusal reason shows why: *"None of the
+provided sections from LoRA papers mention a 4-bit NF4 quantisation scheme."* **No
+QLoRA passage reached the context at all**, so there was no evidence with which to
+correct the premise.
+
+I also found and fixed a genuine contradiction between my own rules along the way:
+rule 3 said "right topic, wrong paper → refuse" while rule 5 said "wrong premise →
+correct it and cite". For `q11` those are the same situation with opposite
+instructions, and rule 3 won on priority. Rule 3 now splits the case explicitly: the
+topic elsewhere in the corpus means correct the premise; the topic nowhere means
+refuse.
+**Decision:** stop after three attempts on `q11` and report the diagnosis instead.
+Step 6 already measured it at **0.00 Recall@5 on every retrieval configuration** — the
+question names the wrong paper, so the query text steers both retrievers into LoRA.
+A prompt cannot correct a premise using evidence it was never given. This is a
+retrieval problem wearing a synthesis costume.
+**README line:** "A false-premise question that names the wrong paper defeats
+retrieval by construction: the query text steers the retriever to the paper the
+question names, and no prompt can correct a premise from evidence that never arrived."
+
+---
+
+## D-132 · Run-to-run variance is large enough to swamp small effects
+**Date:** 2026-08-20
+**Context:** Several measurements moved between runs with no code change in between.
+Observed: condensation drift rate 0/13 then 1/13; papers per multi-hop answer 2 then
+1.00; conversation route accuracy 9/13, 6/13, 10/13 across threshold attempts that
+were partly measuring noise.
+**Cause:** local generation is sampled, not greedy. The disk cache makes an *identical*
+prompt deterministic, but any turn whose prompt depends on a previous turn's answer
+gets a different prompt as soon as that answer differs by a word. Conversations
+compound this turn over turn.
+**Decision:** record it as a first-class limitation rather than reporting single-run
+numbers as though they were stable, and never attribute a small change to a code
+change without re-running.
+**What this cost me, concretely:** a threshold change briefly appeared to *reduce*
+route accuracy from 9/13 to 6/13, and I nearly tuned in the wrong direction on the
+strength of it. The semantic-cache fix (D-125) removed one source of variance; the
+sampling remains.
+**What would fix it, not built:** fix the sampling seed and set temperature to 0 for
+every evaluation call, then re-run each configuration three times and report the
+spread. That is the correct way to measure an effect this small, and it is the single
+most valuable addition to the harness.
+**Consequence for every number in `outputs/eval_report.md`:** they are single-run
+observations. The large, mechanistically-explicable effects (hybrid beats single
+retrievers; reranking fixes cross-paper confusion) are trustworthy. Differences of a
+few percentage points are not.
+**README line:** "Local generation is sampled, so numbers move between runs — the
+large effects are trustworthy, differences of a few points are not, and the report
+says which is which."
+
+---
+
+## D-133 · Retrieval and generation metrics are reported in separate sections
+**Date:** 2026-08-20
+**Decision:** `outputs/eval_report.md` puts LLM-free metrics in section 1 and
+LLM-dependent metrics in sections 2-3, each labelled, rather than merging them into
+one ablation table.
+**Why:** the brief asks which columns are LLM-dependent, and the honest answer is
+structural rather than a footnote. Retrieval numbers are reproducible on demand and
+comparable across providers; generation numbers move with the model, and per D-132
+they move between runs of the *same* model. Putting them in one table invites reading
+a synthesis model's variance as a retrieval result.
+**Consequence:** the report is longer and the headline table is smaller. Both are
+correct.
+**Evidence:** `outputs/eval_report.md` sections 1 through 4, plus the traceability
+table in section 6 marking every README-bound number LLM-dependent or not.
+**README line:** "Retrieval metrics and generation metrics are reported separately and
+labelled, because one is reproducible and the other moves with the model."
+
+---
+
+## D-134 · Measured results, Phase 6
+**Date:** 2026-08-20
+**Full evaluation, 12 single-turn questions and 13 conversation turns, Ollama
+`llama3.1:8b`, zero Gemini calls:**
+
+| Metric | Value | LLM-dependent |
+|---|---:|---|
+| Recall@5, hybrid + rerank | 0.646 [0.42, 0.88] | no |
+| Recall@5, hybrid | 0.583 [0.29, 0.83] | no |
+| Recall@5, dense / sparse | 0.479 / 0.479 | no |
+| **Citation precision** | **0.950** | yes |
+| **Abstention accuracy** | **1.000 (4/4)** | yes |
+| **Invented citation ids** | **0** | yes |
+| **Refusals carrying citations** | **0** | yes |
+| Fact coverage (mean) | 0.486 | yes |
+| Route accuracy, single-turn | 0.833 (10/12) | yes |
+| Route accuracy, conversational | 10/13 | yes |
+| Condensation drift rate | 1/13 (0/13 in a prior run) | yes |
+| Papers per multi-hop answer | 1.00 | yes |
+| p50 / p95 latency | 11.5s / 24.9s | yes |
+| LLM calls / cache hit rate | 340 / 27.1% | yes |
+
+**The four numbers that matter most are the structural ones:** zero invented citation
+ids, zero refusals carrying citations, 4/4 abstention, 0.950 citation precision. Those
+hold because of how the code is written rather than how the model behaved — the first
+two are enforced in `answer.py` and cannot be violated.
+**The weakest numbers, named:** fact coverage at 0.486 is low and reflects an 8B local
+model, substring matching, and demanding `expected_facts`. Papers-per-multi-hop at
+1.00 means the headline multi-hop capability is still unproven.
+**README line:** "Zero invented citations and 4/4 abstention across every run — those
+hold structurally, not by good behaviour on the day."
+
+---
+
+## D-135 · Greedy decoding, and the warm-up call that makes it actually deterministic
+**Date:** 2026-08-20
+**Context:** D-132 recorded that several measurements moved between runs with no code
+change, and that this nearly caused a threshold to be tuned in the wrong direction.
+**Decision:** `temperature = 0` and a fixed `seed` on every local call, both included
+in the disk-cache key, plus one throwaway warm-up call before any measurement begins.
+
+**The warm-up is not superstition — it was measured.** Six consecutive identical
+greedy calls after a cold model load:
+
+```
+1. e803d99d385c   <- differs
+2. b12bd5f2c7ad
+3. b12bd5f2c7ad
+4. b12bd5f2c7ad ... 6/6 agree from call 2 onward
+```
+
+The **first** call after a load returns different text from every subsequent identical
+call, which then agree with each other completely. One call is enough to make an
+evaluation irreproducible, so it is now spent deliberately and discarded rather than
+landing on the first question of the run.
+
+**Verified end to end.** Two full evaluation runs with `.cache/llm` deleted between
+them — so the model regenerated every answer from scratch — produced **byte-identical
+reports apart from wall-clock latency.** Every sentence count, verification status,
+paper count, fact-coverage score, loop count and route decision matched.
+
+**Decoding parameters are part of the cache key.** Without that, changing the
+temperature would silently serve answers generated under the old one, which is a
+subtle way to make a comparison meaningless.
+
+**It also improved the numbers, which was not the goal.** Sampling was costing
+accuracy, not just reproducibility: fact coverage 0.486 -> **0.660**, single-turn
+route accuracy 0.833 -> **0.917**, condensation drift 1/13 -> **0/13**.
+**Consequence:** every generation metric in `outputs/eval_report.md` can now be
+reproduced by re-running the command, and the "single-run observation" caveat that
+D-132 attached to all of them is retired. D-132 stays in the log as the record of why
+this was built.
+**Evidence:** the six-call trace above; the two-run diff.
+**README line:** "Evaluation runs greedily with a fixed seed and a discarded warm-up
+call, because the first generation after a model load is not reproducible — two runs
+with the cache cleared now produce identical reports."
+
+---
+
+## D-136 · The sufficiency judge now fires on every question
+**Date:** 2026-08-20
+**Observed:** after the D-131 judge strengthening, all twelve questions report
+`loops = 2` — the judge calls the evidence insufficient on the first pass every time,
+so every question runs the full loop including relaxation.
+**Is it wrong?** Not in outcome: single-turn route accuracy is 0.917, abstention is
+4/4, and citation precision is 0.882. The loop is finding good evidence.
+**But it is not free.** p50 latency is ~14.6s where a single pass was ~4s, and each
+question now costs a judge call plus a rewrite or decomposition on the volume ladder.
+On Ollama that is only time; on Gemini it would be roughly three times the volume-rung
+consumption per question.
+**Reading:** the judge prompt is now strict enough that "sufficient" is nearly
+unreachable on a first pass. A judge that always says no carries little information —
+it has become an unconditional second retrieval rather than a decision.
+**Decision:** record it rather than re-tune. Re-tuning the judge to be less strict
+risks reintroducing exactly the attribution failure D-119 and D-131 were built to fix,
+and the current behaviour is correct-but-expensive rather than wrong.
+**What to measure before changing it:** run with `max_retrieval_loops = 0` and compare
+route accuracy and fact coverage. If a single pass matches, the judge is pure cost. If
+it does not, the loop is earning its latency. That measurement is not yet done.
+**Evidence:** `loops = 2` on all twelve rows of `outputs/eval_report.md` section 2.
+**README line:** "The sufficiency judge currently rejects the first retrieval on every
+question, which makes the loop an unconditional second pass — correct in outcome,
+roughly 3x the latency, and flagged rather than tuned away."
+
+---
+
+## D-137 · Final measured results, Phase 6 (reproducible)
+**Date:** 2026-08-20
+**Provider:** Ollama `llama3.1:8b`, greedy, fixed seed. **Zero Gemini calls have been
+made at any point in this build.** The user deferred the Gemini comparison.
+
+| Metric | Value | LLM-dependent |
+|---|---:|---|
+| Recall@5 — hybrid + rerank | 0.646 [0.42, 0.88] | no |
+| Recall@5 — hybrid / dense / sparse | 0.583 / 0.479 / 0.479 | no |
+| **Citation precision** | **0.882** | yes |
+| **Abstention accuracy** | **1.000 (4/4)** | yes |
+| **Invented citation ids** | **0** | yes |
+| **Refusals carrying citations** | **0** | yes |
+| Fact coverage (mean) | 0.660 | yes |
+| Route accuracy — single-turn | 0.917 (11/12) | yes |
+| Route accuracy — conversational | 10/13 | yes |
+| **Condensation drift rate** | **0/13** | yes |
+| Papers per multi-hop answer | 1.00 | yes |
+| p50 / p95 latency | 14.6s / 18.6s | yes |
+
+**Reproducible:** two runs with the cache cleared produced identical values for every
+row above except latency.
+
+**The strongest results are the structural ones.** Zero invented citation ids and zero
+refusals carrying citations hold because `answer.py` enforces them, not because the
+model behaved. 4/4 abstention has held across every run of the project.
+
+**The weakest, named plainly.** Papers-per-multi-hop is 1.00: the headline multi-hop
+capability is still unproven, and the one run that produced a genuine two-paper answer
+did not reproduce. `q11` remains the single route failure, diagnosed at Step 6 as a
+retrieval problem (0.00 Recall@5 on every configuration) rather than a synthesis one.
+**README line:** "Every generation number is reproducible: two runs with the cache
+cleared produce identical reports."

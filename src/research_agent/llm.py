@@ -110,10 +110,14 @@ class OllamaProvider:
     name = "ollama"
 
     def __init__(self, host: str, transport: Callable[..., Any] | None = None,
-                 num_ctx: int | None = None, keep_alive: str | None = None) -> None:
+                 num_ctx: int | None = None, keep_alive: str | None = None,
+                 temperature: float | None = None,
+                 seed: int | None = None) -> None:
         self.host = host.rstrip("/")
         self.num_ctx = num_ctx
         self.keep_alive = keep_alive
+        self.temperature = temperature
+        self.seed = seed
         # Injectable so tests exercise the full path with zero network.
         self._transport = transport
 
@@ -152,6 +156,10 @@ class OllamaProvider:
             payload["format"] = schema
         if self.num_ctx:
             payload.setdefault("options", {})["num_ctx"] = self.num_ctx
+        if self.temperature is not None:
+            payload.setdefault("options", {})["temperature"] = self.temperature
+        if self.seed is not None:
+            payload.setdefault("options", {})["seed"] = self.seed
         if self.keep_alive:
             payload["keep_alive"] = self.keep_alive
 
@@ -376,6 +384,8 @@ class LLMClient:
                 self.cfg.ollama_host,
                 num_ctx=self.cfg.ollama_num_ctx,
                 keep_alive=self.cfg.ollama_keep_alive,
+                temperature=self.cfg.llm_temperature,
+                seed=self.cfg.llm_seed,
             )
         if self.gemini is None:
             self.gemini = GeminiProvider()
@@ -434,6 +444,9 @@ class LLMClient:
             if self.cfg.offload_mode == "sequential"
             else self.cfg.ollama_model
         )
+        params = dict(params or {})
+        params.setdefault("temperature", self.cfg.llm_temperature)
+        params.setdefault("seed", self.cfg.llm_seed)
         sha = DiskCache.key(model, prompt, params)
 
         hit = self.cache.get(sha)
@@ -556,6 +569,24 @@ class LLMClient:
             f"{model} returned unparseable JSON on {attempts} attempt(s). "
             f"Last error: {last_error}"
         )
+
+    def warmup(self) -> bool:
+        """Make one throwaway local call before any measurement.
+
+        Greedy decoding is deterministic, but only once the model is warm: measured
+        on this machine, the FIRST call after a cold load returns different text from
+        every subsequent identical call, which then agree with each other 6/6. That
+        one call is enough to make an evaluation irreproducible, so it is spent
+        deliberately and discarded rather than landing on the first question.
+        """
+        if self.cfg.provider == "gemini":
+            return False
+        try:
+            self.complete("Reply with the single word: ready.", purpose="warmup",
+                          ladder="volume", provider="ollama")
+            return True
+        except Exception:
+            return False
 
     # -- reporting ----------------------------------------------------------
     def budget(self) -> list[dict[str, Any]]:

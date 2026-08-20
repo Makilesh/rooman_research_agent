@@ -87,6 +87,13 @@ class Config:
     # Ollama's scheduler otherwise evicts and reloads a 5.5 GB model repeatedly, and
     # a reload costs ~30s of pure disk I/O per turn.
     ollama_keep_alive: str = "15m"
+    # Greedy decoding by default. Sampled generation made several measurements move
+    # between runs with no code change -- drift rate 0/13 then 1/13, multi-hop papers
+    # 2 then 1 -- and a threshold change once appeared to REDUCE route accuracy when
+    # it was measuring noise. An evaluation that does not reproduce is not evidence.
+    # The seed is sent as well, so a future non-zero temperature is still repeatable.
+    llm_temperature: float = 0.0
+    llm_seed: int = 0
     gemini_key_env_prefix: str = "GEMINI_API_KEY_"
     gemini_max_keys: int = 3
     gemini_timeout_s: float = 60.0
