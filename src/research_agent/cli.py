@@ -1173,6 +1173,8 @@ def eval_cmd(
     models = _load_models(cfg)
     client = LLMClient(cfg=cfg, conn=conn,
                        api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    if client.warmup():
+        _ok("model warmed", "the first call after a cold load is not reproducible")
     gen = evaluate.GenerationMetrics()
 
     for item in label_set.items:
