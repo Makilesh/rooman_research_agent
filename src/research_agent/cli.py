@@ -1127,6 +1127,158 @@ def chat_eval(
                   f"({len(transcripts)} files)")
 
 
+@app.command("eval")
+def eval_cmd(
+    provider: str = typer.Option(None, "--provider", help="ollama | gemini | auto."),
+    skip_conversations: bool = typer.Option(
+        False, "--skip-conversations", help="Single-turn metrics only."),
+) -> None:
+    """Full evaluation: retrieval ablation, generation metrics, both tables."""
+    import yaml
+
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    label_set = labels_mod.load(cfg)
+    problems = labels_mod.validate(cfg, conn, label_set, index_mod.load_fingerprint(conn))
+    if problems:
+        for p in problems:
+            _fail(p)
+        raise typer.Exit(1)
+    _ok(f"{len(label_set.items)} gold labels validated")
+
+    # ---- retrieval ablation (LLM-free) ----------------------------------
+    console.rule("[bold]1 · Retrieval ablation (zero LLM calls)")
+    calls_before = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    retrievers = evaluate.Retrievers(cfg, conn)
+    ablation = [evaluate.evaluate_config(retrievers, label_set.items, c)
+                for c in evaluate.CONFIGS]
+    evidence = evaluate.derive_thresholds(retrievers, label_set, cfg)
+    calls_after = db.scalar(conn, "SELECT COUNT(*) FROM llm_calls") or 0
+    if calls_after == calls_before:
+        _ok("zero LLM calls consumed by retrieval evaluation")
+    else:
+        _fail(f"{calls_after - calls_before} LLM calls consumed by retrieval eval")
+
+    # ---- generation metrics ---------------------------------------------
+    console.rule("[bold]2 · Generation metrics (LLM-dependent)")
+    conn.execute("DELETE FROM answer_cache")
+    conn.commit()
+    models = _load_models(cfg)
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    gen = evaluate.GenerationMetrics()
+
+    for item in label_set.items:
+        console.print(f"[dim]-> {item.id}[/dim]")
+        session_id = conversation.new_session(conn, index_mod.load_fingerprint(conn))
+        try:
+            turn = agent.run_turn(cfg, conn, client, models, session_id,
+                                  item.question, provider=provider)
+        except Exception as exc:
+            _fail(item.id, f"{type(exc).__name__}: {exc}")
+            continue
+
+        ans = turn.answer
+        gen.n_items += 1
+        gen.schema_valid += 1
+        gen.latencies.append(turn.latency_ms)
+        gen.routes.append((item.expected_route, turn.decision))
+
+        if ans is not None and not ans.is_refusal:
+            invented = ans.cited_chunk_ids - {h.chunk_id for h in ans.hits}
+            gen.invented_citations += len(invented)
+            gen.sentences_total += len(ans.sentences)
+            gen.sentences_verified += sum(1 for s in ans.sentences
+                                          if s.status in {"verified", "repaired"})
+            cov = evaluate.fact_coverage(ans, item.expected_facts)
+            if cov == cov:  # not NaN
+                gen.fact_coverage.append(cov)
+            if item.cls == "multi_hop":
+                gen.multi_hop_papers.append(
+                    len({h.doc_id for h in ans.hits if h.chunk_id in ans.cited_chunk_ids}))
+        elif turn.decision in {"refuse", "abstain"} and ans is not None:
+            if ans.cited_chunk_ids:
+                gen.refusals_with_citations += 1
+
+        if item.must_abstain:
+            gen.controls_total += 1
+            if turn.decision in {"refuse", "abstain"}:
+                gen.controls_correct += 1
+
+        gen.per_item.append({
+            "id": item.id, "class": item.cls,
+            "expected": item.expected_route, "actual": turn.decision,
+            "sentences": len(ans.sentences) if ans else 0,
+            "verified": (sum(1 for s in ans.sentences if s.status == "verified")
+                         if ans else 0),
+            "papers": (len({h.doc_id for h in ans.hits
+                            if h.chunk_id in ans.cited_chunk_ids}) if ans else 0),
+            "coverage": evaluate.fact_coverage(ans, item.expected_facts),
+            "loops": turn.n_loops, "ms": turn.latency_ms,
+        })
+
+    # ---- conversation metrics -------------------------------------------
+    convo: dict = {}
+    if not skip_conversations and cfg.conversations_path.exists():
+        console.rule("[bold]3 · Conversation metrics")
+        spec = yaml.safe_load(cfg.conversations_path.read_text(encoding="utf-8"))
+        rows, drifted, coref_ok, coref_total = [], 0, 0, 0
+        for scenario in spec["scenarios"]:
+            session_id = conversation.new_session(conn, index_mod.load_fingerprint(conn))
+            for i, t in enumerate(scenario["turns"], start=1):
+                turn = agent.run_turn(
+                    cfg, conn, client, models, session_id, t["raw_text"],
+                    provider=provider,
+                    is_clarification_reply=bool(t.get("is_clarification_reply")))
+                if turn.condensed.drifted:
+                    drifted += 1
+                if t.get("resolves_ordinal"):
+                    coref_total += 1
+                    if turn.resolved_refs:
+                        coref_ok += 1
+                rows.append((scenario["id"], i, t.get("expected_route"), turn.decision))
+        convo = {
+            "turns": len(rows), "drifted": drifted,
+            "route_correct": sum(1 for _, _, e, a in rows if evaluate._route_ok(e, a)),
+            "coref_ok": coref_ok, "coref_total": coref_total,
+            "rows": rows,
+        }
+
+    ledger = evaluate.ledger_summary(conn)
+
+    # ---- report ----------------------------------------------------------
+    path = report.write_full_report(cfg, ablation, label_set, evidence, gen, convo,
+                                    ledger)
+    console.rule("[bold]Summary")
+    console.print(f"  citation precision (verified/cited)  "
+                  f"{gen.citation_precision:.3f}   [dim]LLM-dependent[/dim]")
+    console.print(f"  abstention accuracy                  "
+                  f"{gen.abstention_accuracy:.3f}   [dim]{gen.controls_correct}/"
+                  f"{gen.controls_total}[/dim]")
+    console.print(f"  fact coverage (mean)                 "
+                  f"{gen.mean_fact_coverage:.3f}   [dim]LLM-dependent[/dim]")
+    console.print(f"  route accuracy (single-turn)         {gen.route_accuracy:.3f}")
+    console.print(f"  invented citation ids                {gen.invented_citations}")
+    console.print(f"  refusals carrying citations          {gen.refusals_with_citations}")
+    console.print(f"  p50 / p95 latency                    "
+                  f"{gen.latency(50):.0f} / {gen.latency(95):.0f} ms")
+    if convo:
+        console.print(f"  conversation route accuracy          "
+                      f"{convo['route_correct']}/{convo['turns']}")
+        console.print(f"  condensation drift rate              "
+                      f"{convo['drifted']}/{convo['turns']}  [dim]target 0[/dim]")
+    console.print(f"  LLM calls / cache hit rate           "
+                  f"{ledger['total']} / {ledger['cache_hit_rate']:.1%}")
+    _ok(f"wrote {path.relative_to(cfg.repo_root)}")
+
+
 @app.command("db")
 def db_cmd(
     tables: bool = typer.Option(False, "--tables", help="List every table."),
