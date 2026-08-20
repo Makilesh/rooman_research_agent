@@ -677,7 +677,8 @@ def eval_retrieval(
         console.print()
         console.rule("[bold]THRESHOLD DERIVATION")
         evidence = evaluate.derive_thresholds(retrievers, label_set, cfg)
-        for pop in (evidence.positives, evidence.negatives):
+        for pop in (evidence.routing_positives, evidence.routing_negatives,
+                    evidence.pair_positives, evidence.pair_negatives):
             console.print(f"\n[bold]{pop.name}[/bold]  (n={pop.n})")
             s = pop.summary()
             console.print("  " + "  ".join(f"{k}={v:.3f}" if k != "n" else f"n={int(v)}"

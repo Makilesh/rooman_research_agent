@@ -169,12 +169,33 @@ def persist(conn: Connection, cfg: Config, results: Sequence[ConfigResult],
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class ThresholdEvidence:
-    positives: rerank_mod.Population
-    negatives: rerank_mod.Population
+    """Two distinct populations, because two different decisions are being made.
+
+    **Routing** looks at one number per question: the top rerank score on the slate.
+    **Verification** looks at one number per (sentence, cited chunk) pair.
+
+    Deriving a routing threshold from the per-pair distribution -- which the first
+    version of this function did -- is a category error. A question whose best gold
+    chunk scores 0.99 routes to ANSWER regardless of whether its third gold chunk
+    scores 0.18, so per-chunk scores describe a decision nobody makes. It also drags
+    the positive population's lower tail down and pushes tau_high far higher than the
+    routing evidence supports.
+
+    Note the sample sizes: the per-question populations are 8 and 4. That is small
+    enough that the sweep matters more than the point estimate, which is why both are
+    reported.
+    """
+
+    routing_positives: rerank_mod.Population   # per answerable question, top score
+    routing_negatives: rerank_mod.Population   # per control question, top score
+    pair_positives: rerank_mod.Population      # per gold chunk
+    pair_negatives: rerank_mod.Population      # per chunk retrieved for a control
     sweep: rerank_mod.ThresholdSweep
     tau_high: float
     tau_low: float
     tau_verify: float
+    derivation: dict[str, str] = field(default_factory=dict)
+    separable: bool = True
 
 
 def derive_thresholds(retrievers: Retrievers, labels: LabelSet,
@@ -192,36 +213,81 @@ def derive_thresholds(retrievers: Retrievers, labels: LabelSet,
     for them is a genuine negative.
     """
     assert retrievers.reranker is not None
-    positives: list[float] = []
-    negatives: list[float] = []
+    pair_pos: list[float] = []
+    pair_neg: list[float] = []
+    route_pos: list[float] = []
+    route_neg: list[float] = []
 
     for item in labels.items:
         hits, _ = retrievers.run("hybrid", item.question)
-        pairs = [(item.question, h.text) for h in hits[: cfg.rerank_candidates]]
-        scores = rerank_mod.score_pairs(retrievers.reranker, pairs, cfg)
-        for hit, score in zip(hits, scores):
+        candidates = hits[: cfg.rerank_candidates]
+        scores = rerank_mod.score_pairs(
+            retrievers.reranker, [(item.question, h.text) for h in candidates], cfg)
+        if not scores:
+            continue
+
+        # What the router actually sees: the single best score on the slate.
+        top = max(scores)
+        if item.must_abstain:
+            route_neg.append(top)
+        elif item.gold_chunks:
+            route_pos.append(top)
+
+        for hit, score in zip(candidates, scores):
             if hit.chunk_id in item.gold_chunks:
-                positives.append(score)
+                pair_pos.append(score)
             elif item.must_abstain:
-                negatives.append(score)
+                pair_neg.append(score)
 
-    pos = rerank_mod.Population("gold chunks (answerable questions)", positives)
-    neg = rerank_mod.Population("all chunks retrieved for control questions", negatives)
-    sweep = rerank_mod.sweep_thresholds(positives, negatives)
+    rpos = rerank_mod.Population("top score per ANSWERABLE question (routing)", route_pos)
+    rneg = rerank_mod.Population("top score per CONTROL question (routing)", route_neg)
+    ppos = rerank_mod.Population("per gold chunk (verification)", pair_pos)
+    pneg = rerank_mod.Population("per chunk retrieved for a control (verification)", pair_neg)
 
-    # tau_low: the floor below which refusing is right. Set from the negative
-    # population's upper tail -- above almost every score the corpus produces for a
-    # question it cannot answer.
-    tau_low = round(neg.pct(95), 3) if negatives else 0.0
-    # tau_high: answering directly is safe. Set from the positive population's lower
-    # tail, so genuine evidence is not routed to clarification.
-    tau_high = round(pos.pct(25), 3) if positives else 0.0
-    # Keep the band non-degenerate even if the populations overlap more than expected.
-    if tau_high <= tau_low:
-        tau_high = round(min(0.99, tau_low + 0.05), 3)
-    # tau_verify: groundedness floor for sentence-to-chunk support at Step 8. Softer
-    # than tau_low, because a sentence paraphrases its source rather than restating
-    # the question, and the same model scores a systematically weaker match.
-    tau_verify = round(max(0.05, neg.pct(75)), 3) if negatives else 0.0
+    # The sweep is over the routing populations, because routing is what it informs.
+    sweep = rerank_mod.sweep_thresholds(route_pos, route_neg)
 
-    return ThresholdEvidence(pos, neg, sweep, tau_high, tau_low, tau_verify)
+    # tau_low -- below this, refuse. Set just above the best score the corpus can
+    # muster for a question it genuinely cannot answer.
+    tau_low = round(max(route_neg), 3) if route_neg else 0.0
+    # tau_high -- above this, answer directly. Set at the weakest top score among
+    # questions that DO have an answer, so real evidence is never sent to clarify.
+    tau_high = round(min(route_pos), 3) if route_pos else 0.0
+
+    derivation: dict[str, str] = {}
+    separable = tau_high > tau_low
+    if separable:
+        derivation["tau_low"] = ("highest top-score any control question achieved "
+                                 f"(max of n={len(route_neg)})")
+        derivation["tau_high"] = ("lowest top-score any answerable question achieved "
+                                  f"(min of n={len(route_pos)})")
+    else:
+        # The populations overlap, so no single cut separates them. Say so, and open a
+        # band around the sweep's peak rather than inventing a separation the data
+        # does not show.
+        best_tau, _ = sweep.best_f1()
+        tau_low = round(max(0.05, best_tau - 0.05), 3)
+        tau_high = round(min(0.99, best_tau + 0.15), 3)
+        derivation["tau_low"] = (
+            f"populations OVERLAP (best control {max(route_neg):.3f} >= weakest "
+            f"answerable {min(route_pos):.3f}), so no clean cut exists. Set 0.05 below "
+            f"the sweep's balanced-accuracy peak ({best_tau:.2f})."
+        )
+        derivation["tau_high"] = (
+            f"0.15 above the sweep peak ({best_tau:.2f}), widening the clarify band to "
+            f"cover the region where the two populations genuinely mix."
+        )
+
+    # tau_verify -- groundedness floor for one cited sentence against one chunk. Read
+    # off the per-pair control distribution, not the routing one: a sentence
+    # paraphrases its source rather than restating the question, so the same model
+    # scores a systematically weaker match and a routing-scale floor would reject
+    # correctly-cited sentences.
+    tau_verify = round(max(0.05, pneg.pct(95)), 3) if pair_neg else 0.0
+    derivation["tau_verify"] = (
+        f"p95 of the per-chunk control distribution (n={len(pair_neg)}) — 95% of "
+        f"chunks retrieved for an unanswerable question score below this"
+    )
+
+    return ThresholdEvidence(rpos, rneg, ppos, pneg, sweep,
+                             tau_high, tau_low, tau_verify, derivation, separable)

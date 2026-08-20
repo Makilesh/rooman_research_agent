@@ -106,7 +106,8 @@ def write_eval_report(
             "correct answer anywhere in the corpus, so every chunk retrieved for them "
             "is a genuine negative.")
         add("")
-        for pop in (evidence.positives, evidence.negatives):
+        for pop in (evidence.routing_positives, evidence.routing_negatives,
+                    evidence.pair_positives, evidence.pair_negatives):
             s = pop.summary()
             add(f"**{pop.name}** (n={pop.n})")
             add("")
