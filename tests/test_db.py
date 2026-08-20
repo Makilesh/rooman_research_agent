@@ -140,3 +140,36 @@ def test_reset_on_an_open_database_explains_itself(cfg: Config):
             db.reset(cfg, confirm=True)
     finally:
         c.close()
+
+
+def test_iso_cutoff_matches_the_ledger_timestamp_format(conn):
+    """A same-day mixed-format comparison silently matches rows it should exclude.
+
+    `llm_calls.ts` is ISO-8601 with a 'T' separator; `datetime('now')` uses a space.
+    They are compared as strings, and at index 10 'T' (84) sorts after ' ' (32) -- so
+    for any row from TODAY, `ts >= datetime('now','-5 minutes')` is true regardless of
+    the actual time. The year saves you across days, which is exactly why the bug
+    hides: it only appears while diagnosing a run in progress, which is when it did.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from research_agent import db as _db
+
+    # Today, but two hours ago -- outside a five-minute window by any honest reading.
+    stale = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    conn.execute(
+        "INSERT INTO llm_calls (ts, provider, model, key_alias, purpose, prompt_sha) "
+        "VALUES (?, 'gemini', 'm', 'k', 'p', 's')", (stale,))
+    conn.commit()
+
+    correct = _db.scalar(
+        conn, "SELECT COUNT(*) FROM llm_calls WHERE ts >= ?",
+        (_db.iso_cutoff(minutes=5),))
+    assert correct == 0, "a row from two hours ago is not within five minutes"
+
+    naive = _db.scalar(
+        conn, "SELECT COUNT(*) FROM llm_calls WHERE ts >= datetime('now','-5 minutes')")
+    assert naive == 1, (
+        "the trap: the naive comparison wrongly includes a two-hour-old row, because "
+        "'T' sorts after the space that datetime() uses"
+    )
