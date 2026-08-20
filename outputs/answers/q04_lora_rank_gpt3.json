@@ -16,7 +16,7 @@
     },
     {
       "idx": 1,
-      "text": "In principle, we can apply LoRA to any subset of weight matrices in a neural network to reduce the number of trainable parameters. We limit our study to only adapting the attention weights for downstream tasks and freeze the MLP modules (so they are not trained in downstream tasks) both for simplicity and parameter-efficiency.",
+      "text": "In the Transformer architecture, there are four weight matrices in the self-attention module (Wq, Wk, Wv, Wo) and two in the MLP module.",
       "cite": [
         "p_lora_0002"
       ],
@@ -57,6 +57,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 7921,
-  "turn_id": "t_3584652e1cc2"
+  "latency_ms": 6343,
+  "turn_id": "t_f950cab6f5df"
 }

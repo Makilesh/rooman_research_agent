@@ -16,7 +16,7 @@
     },
     {
       "idx": 1,
-      "text": "Since pretrained neural network weights usually have a zero-centered normal distribution with standard deviation σ, we can transform all weights to a single fixed distribution by scaling σ such that the distribution fits exactly into the range of our data type.",
+      "text": "For our data type, we set the arbitrary range [−1, 1]. As such, both the quantiles for the data type and the neural network weights need to be normalized into this range.",
       "cite": [
         "p_qlora_0002"
       ],
@@ -27,7 +27,7 @@
     },
     {
       "idx": 2,
-      "text": "The information theoretically optimal data type for zero-mean normal distributions with arbitrary standard deviations σ in the range [−1, 1] is computed as follows: (1) estimate the 2k + 1 quantiles of a theoretical N(0, 1) distribution to obtain a k-bit quantile quantization data type for normal distributions.",
+      "text": "The information theoretically optimal data type for zero-mean normal distributions with arbitrary standard deviations σ in the range [−1, 1] is computed as follows: (1) estimate the 2k + 1 quantiles of a theoretical N(0, 1) distribution to obtain a k-bit quantile quantization data type for normal distributions",
       "cite": [
         "p_qlora_0002"
       ],
@@ -38,23 +38,23 @@
     },
     {
       "idx": 3,
-      "text": "We create an asymmetric data type by estimating the quantiles qi of two ranges qi: 2k−1 for the negative part and 2k−1 + 1 for the positive part and then we unify these sets of qi and remove one of the two zeros that occurs in both sets.",
+      "text": "We present QLORA, an efficient finetuning approach that reduces memory usage enough to finetune a 65B parameter model on a single 48GB GPU while preserving full 16-bit finetuning task performance.",
       "cite": [
-        "p_qlora_0002"
+        "p_qlora_0000"
       ],
       "verify_scores": {
-        "p_qlora_0002": 1.0
+        "p_qlora_0000": 1.0
       },
       "status": "verified"
     },
     {
       "idx": 4,
-      "text": "We term the resulting data type that has equal expected number of values in each quantization bin k-bit NormalFloat (NFk), since the data type is information-theoretically optimal for zero-centered normally distributed data.",
+      "text": "The NormalFloat data type significantly improves the bit-for-bit accuracy gains compared to regular 4-bit Floats. While Double Quantization (DQ) only leads to minor gains, it allows for a more fine-grained control over the memory footprint",
       "cite": [
-        "p_qlora_0002"
+        "p_qlora_0004"
       ],
       "verify_scores": {
-        "p_qlora_0002": 1.0
+        "p_qlora_0004": 1.0
       },
       "status": "verified"
     }
@@ -90,6 +90,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 15046,
-  "turn_id": "t_9e2d87157d4d"
+  "latency_ms": 12750,
+  "turn_id": "t_94f8af88a9de"
 }

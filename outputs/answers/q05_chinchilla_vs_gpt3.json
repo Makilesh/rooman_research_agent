@@ -5,7 +5,7 @@
   "sentences": [
     {
       "idx": 0,
-      "text": "We find that model size and the number of training tokens should be scaled in equal proportions.",
+      "text": "For every doubling of model size the number of training tokens should also be doubled.",
       "cite": [
         "p_chinchilla_0000"
       ],
@@ -16,7 +16,18 @@
     },
     {
       "idx": 1,
-      "text": "Following Kaplan et al. (2020) and the training setup of GPT-3, many of the recently trained large models have been trained for approximately 300 billion tokens, in line with the approach of predominantly increasing model size when increasing compute.",
+      "text": "By training over 400 language models ranging from 70 million to over 16 billion parameters on 5 to 500 billion tokens, we find that for compute-optimal training, the model size and the number of training tokens should be scaled equally.",
+      "cite": [
+        "p_chinchilla_0000"
+      ],
+      "verify_scores": {
+        "p_chinchilla_0000": 1.0
+      },
+      "status": "verified"
+    },
+    {
+      "idx": 2,
+      "text": "Based on our estimated compute-optimal frontier, we predict that for the compute budget used to train Gopher, an optimal model should be 4 times smaller, while being training on 4 times more tokens.",
       "cite": [
         "p_chinchilla_0000"
       ],
@@ -28,26 +39,26 @@
   ],
   "sources": [
     {
-      "chunk_id": "p_gpt3_0005",
-      "doc_id": "gpt3",
-      "title": "Language Models are Few-Shot Learners",
-      "page_start": 7,
-      "page_end": 9,
-      "section": "2 Approach",
-      "rerank_score": 0.996249258518219
-    },
-    {
       "chunk_id": "p_chinchilla_0000",
       "doc_id": "chinchilla",
       "title": "Training Compute-Optimal Large Language Models",
       "page_start": 1,
       "page_end": 3,
       "section": null,
-      "rerank_score": 0.9939963817596436
+      "rerank_score": 0.9941118359565735
+    },
+    {
+      "chunk_id": "p_chinchilla_0002",
+      "doc_id": "chinchilla",
+      "title": "Training Compute-Optimal Large Language Models",
+      "page_start": 3,
+      "page_end": 6,
+      "section": "2 Related Work",
+      "rerank_score": 0.9906237721443176
     }
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 5780,
-  "turn_id": "t_8ccbc9ccc104"
+  "latency_ms": 7014,
+  "turn_id": "t_dcbf1f543cd4"
 }

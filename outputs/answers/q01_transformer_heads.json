@@ -7,34 +7,25 @@
       "idx": 0,
       "text": "In this work we employ h = 8 parallel attention layers, or heads.",
       "cite": [
-        "p_attention_0001"
+        "p_attention_0001",
+        "p_attention_0002"
       ],
       "verify_scores": {
-        "p_attention_0001": 1.0
+        "p_attention_0001": 1.0,
+        "p_attention_0002": 1.0
       },
       "status": "verified"
     },
     {
       "idx": 1,
-      "text": "We found it beneficial to linearly project the queries, keys and values h times with different, learned linear projections to dk, dk and dv dimensions, respectively. On each of these projected versions of queries, keys and values we then perform the attention function in parallel, yielding dv-dimensional output values.",
-      "cite": [
-        "p_attention_0001"
-      ],
-      "verify_scores": {
-        "p_attention_0001": 1.0
-      },
-      "status": "verified"
-    },
-    {
-      "idx": 2,
       "text": "For each of these we use dk = dv = dmodel/h = 64.",
       "cite": [
-        "p_attention_0002",
-        "p_attention_0004"
+        "p_attention_0001",
+        "p_attention_0002"
       ],
       "verify_scores": {
-        "p_attention_0002": 1.0,
-        "p_attention_0004": 1.0
+        "p_attention_0001": 1.0,
+        "p_attention_0002": 1.0
       },
       "status": "verified"
     }
@@ -70,6 +61,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 7546,
-  "turn_id": "t_72f1cc77181c"
+  "latency_ms": 4609,
+  "turn_id": "t_5f002c7c287c"
 }
