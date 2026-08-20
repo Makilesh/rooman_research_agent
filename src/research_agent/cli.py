@@ -178,7 +178,8 @@ def doctor(
             else:
                 # A real kernel launch. A device query alone does not prove the
                 # build actually carries kernels for this architecture.
-                a = torch.randn(2048, 2048, device="cuda", dtype=torch.float16)
+                dim = cfg.gpu_probe_dim
+                a = torch.randn(dim, dim, device="cuda", dtype=torch.float16)
                 (a @ a).float().sum().item()
                 torch.cuda.synchronize()
                 _ok(

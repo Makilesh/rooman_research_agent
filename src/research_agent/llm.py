@@ -34,6 +34,10 @@ RPD_WINDOW = timedelta(hours=24)
 # key_alias and `budget` needs no special case.
 LOCAL_KEY = "local"
 
+# Local inference has no provider-imposed cap. A sentinel keeps the ledger path
+# identical for both providers instead of branching around the limiter.
+UNLIMITED = 1_000_000_000
+
 
 class QuotaExhausted(RuntimeError):
     """Every rung on a ladder is saturated. Names the rung; never a stack trace."""
@@ -410,7 +414,7 @@ class LLMClient:
         # Local inference has no quota, but it still gets a ledger row so that
         # "LLM calls per turn" is measurable on the free path too.
         row_id = self.ledger.try_acquire(
-            model, LOCAL_KEY, rpm=10**9, rpd=10**9, purpose=purpose,
+            model, LOCAL_KEY, rpm=UNLIMITED, rpd=UNLIMITED, purpose=purpose,
             prompt_sha=sha, provider="ollama", ladder=ladder,
         )
         assert row_id is not None  # local limits are effectively infinite
@@ -419,7 +423,7 @@ class LLMClient:
             provider_obj=self.ollama, provider_name="ollama", model=model,
             api_key=None, timeout_s=self.cfg.ollama_timeout_s, prompt=prompt,
             schema=schema, sha=sha, row_id=row_id, key_alias=LOCAL_KEY, ladder=ladder,
-            purpose=purpose, rpm=10**9, rpd=10**9,
+            purpose=purpose, rpm=UNLIMITED, rpd=UNLIMITED,
         )
 
     def _complete_gemini(

@@ -87,6 +87,9 @@ class Config:
     # sequential: free encoders after retrieval, then call a 14B-class model.
     offload_mode: Literal["coresident", "sequential"] = "coresident"
     embed_device: str = "cuda"
+    # Square matrix edge for doctor's fp16 smoke test. Large enough to be a
+    # genuine kernel launch, small enough to never pressure VRAM.
+    gpu_probe_dim: int = 2048
     embed_dtype: Literal["float16", "float32"] = "float16"
     require_cuda: bool = True
 
