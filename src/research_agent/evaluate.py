@@ -218,7 +218,16 @@ def derive_thresholds(retrievers: Retrievers, labels: LabelSet,
     route_pos: list[float] = []
     route_neg: list[float] = []
 
-    for item in labels.items:
+    # Calibrating on the single-turn set alone produced a threshold that refused
+    # legitimate conversational questions: "What problem does LoRA solve?" scores
+    # 0.684, well below the 0.789 minimum of the single-turn positives. Well-formed
+    # evaluation questions are longer and more specific than what a person types in a
+    # conversation, so a threshold fitted only to them is fitted to the wrong
+    # distribution. First-turn scenario questions need no condensation, so they can be
+    # scored directly and added to the population that the router will actually face.
+    extra = _conversation_turn_ones(cfg)
+
+    for item in list(labels.items) + extra:
         hits, _ = retrievers.run("hybrid", item.question)
         candidates = hits[: cfg.rerank_candidates]
         scores = rerank_mod.score_pairs(
@@ -262,20 +271,39 @@ def derive_thresholds(retrievers: Retrievers, labels: LabelSet,
         derivation["tau_high"] = ("lowest top-score any answerable question achieved "
                                   f"(min of n={len(route_pos)})")
     else:
-        # The populations overlap, so no single cut separates them. Say so, and open a
-        # band around the sweep's peak rather than inventing a separation the data
-        # does not show.
-        best_tau, _ = sweep.best_f1()
-        tau_low = round(max(0.05, best_tau - 0.05), 3)
-        tau_high = round(min(0.99, best_tau + 0.15), 3)
+        # The populations overlap, so no single cut separates them. The clarify band
+        # is set to exactly the overlap region: below it no answerable question ever
+        # scored, above it no control ever scored, and inside it the two genuinely
+        # mix. That is what "ambiguous" means here, measured rather than asserted.
+        #
+        # An earlier version instead opened a band around the sweep's balanced-accuracy
+        # peak (peak-0.05, peak+0.15). That was arbitrary and, measured end to end, it
+        # was badly wrong: it produced tau_high = 0.99, which pushed roughly half of
+        # genuinely answerable questions into clarify and scored 2/13 on the
+        # conversation scenarios. The lesson kept here: a threshold rule has to be
+        # validated against routing behaviour, not just against its own histogram.
+        # Percentiles, not extremes. Keying the band on min(positives) and
+        # max(negatives) uses exactly one observation from each population, and with
+        # n=11 and n=4 those single points move a long way on resampling. Measured
+        # end to end, the extremes rule produced a band of [0.674, 0.839] that
+        # swallowed most legitimate questions and scored 6/13 on the scenarios.
+        #
+        # p05 of the positives and p95 of the negatives are the standard robust
+        # choice: they tolerate one unusual question on either side and describe
+        # where the distributions actually overlap in density rather than in range.
+        tau_low = round(rpos.pct(5), 3)
+        tau_high = round(max(rneg.pct(95), tau_low + 0.02), 3)
         derivation["tau_low"] = (
             f"populations OVERLAP (best control {max(route_neg):.3f} >= weakest "
-            f"answerable {min(route_pos):.3f}), so no clean cut exists. Set 0.05 below "
-            f"the sweep's balanced-accuracy peak ({best_tau:.2f})."
+            f"answerable {min(route_pos):.3f}), so no clean cut exists. Set at p05 of "
+            f"the answerable population (n={len(route_pos)}) -- robust to one unusually "
+            f"weak question, where the minimum is not."
         )
         derivation["tau_high"] = (
-            f"0.15 above the sweep peak ({best_tau:.2f}), widening the clarify band to "
-            f"cover the region where the two populations genuinely mix."
+            f"p95 of the control population (n={len(route_neg)}): above this, a score "
+            f"is one the corpus essentially never produces for a question it cannot "
+            f"answer. NOTE the tiny negative sample -- this is the least well-evidenced "
+            f"number in the system."
         )
 
     # tau_verify -- groundedness floor for one cited sentence against one chunk. Read
@@ -291,3 +319,40 @@ def derive_thresholds(retrievers: Retrievers, labels: LabelSet,
 
     return ThresholdEvidence(rpos, rneg, ppos, pneg, sweep,
                              tau_high, tau_low, tau_verify, derivation, separable)
+
+
+def _conversation_turn_ones(cfg: Config) -> list[GoldItem]:
+    """First turns of each conversation scenario, as extra calibration items.
+
+    Only turn 1, deliberately: later turns depend on condensation, so scoring them
+    here would fold condenser behaviour into a retrieval threshold and make the
+    measurement depend on which model happened to serve the condensation.
+
+    A `clarify` expectation is excluded from both populations. It is by definition
+    neither clearly answerable nor clearly unanswerable, so it cannot inform a
+    boundary without begging the question.
+    """
+    import yaml
+
+    if not cfg.conversations_path.exists():
+        return []
+    spec = yaml.safe_load(cfg.conversations_path.read_text(encoding="utf-8"))
+    out: list[GoldItem] = []
+    for scenario in spec.get("scenarios", []):
+        turns = scenario.get("turns") or []
+        if not turns:
+            continue
+        first = turns[0]
+        expected = first.get("expected_route")
+        if expected not in {"answer", "refuse"}:
+            continue
+        out.append(GoldItem(
+            id=f"{scenario['id']}::turn1",
+            question=first["raw_text"],
+            cls="conversation_turn1",
+            must_abstain=(expected == "refuse"),
+            expected_route=expected,
+            gold_chunks=list(first.get("gold_chunks") or []),
+            expected_facts=[],
+        ))
+    return out

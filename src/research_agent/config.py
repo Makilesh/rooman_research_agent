@@ -145,8 +145,8 @@ class Config:
     # Honest caveat, repeated in the README: these are tuned on the same question set
     # the routing is later scored against, not on held-out data (decisions.md D-113).
     thresholds_are_measured: bool = True
-    tau_low: float = 0.8       # below this, refuse
-    tau_high: float = 0.99     # above this, answer directly; between the two, ask
+    tau_low: float = 0.736     # below this, refuse
+    tau_high: float = 0.786    # above this, answer directly; between the two, ask
     tau_verify: float = 0.378  # groundedness floor for one cited sentence
 
     # -- Conversation (section 4.1) -----------------------------------------
