@@ -81,7 +81,17 @@ RULES, in order of priority:
    NOT simply refuse. Say plainly that the premise is wrong, then cite what the
    passages actually say. Set insufficient_evidence to false for this case.
 
-6. Be specific. Prefer the exact figure, name, or setting from the passage over a
+6. IF THE QUESTION COMPARES TWO THINGS, ANSWER FROM BOTH. When the question asks how
+   one method differs from, extends, or compares with another, and the passages
+   include material from more than one paper, your answer must draw on both and cite
+   both. Do not answer a comparative question from the stronger paper alone — an
+   answer that describes only one side of a comparison is not an answer to the
+   question that was asked, however well cited it is.
+
+   If the passages genuinely only cover one side, say which side is missing rather
+   than presenting a one-sided answer as complete.
+
+7. Be specific. Prefer the exact figure, name, or setting from the passage over a
    paraphrase. Do not add caveats the passages do not support."""
 
 
@@ -105,6 +115,24 @@ QUESTION: What learning rate schedule is used?
 
 {"insufficient_evidence": true, "refusal_reason": "The passages give the batch size
 and step count but say nothing about a learning rate schedule.", "sentences": []}
+
+EXAMPLE — a comparative question, answered from BOTH papers:
+
+SOURCES:
+[c_demo_0010] (Alpha Paper · p.3) Alpha freezes the base weights and trains a small
+adapter, cutting trainable parameters by 99%.
+[c_demo_0011] (Beta Paper · p.5) Beta additionally quantises the frozen base to 4-bit,
+reducing memory a further 3x over Alpha.
+
+QUESTION: How does Beta reduce memory beyond what Alpha achieves?
+
+{"insufficient_evidence": false, "refusal_reason": null, "sentences": [
+  {"text": "Alpha freezes the base weights and trains a small adapter, cutting
+trainable parameters by 99%.", "cite": ["c_demo_0010"]},
+  {"text": "Beta goes further by quantising that frozen base to 4-bit, reducing
+memory a further 3x over Alpha.", "cite": ["c_demo_0011"]}]}
+
+Both papers are cited, because the question asked about both.
 
 EXAMPLE — right topic, WRONG PAPER (the passages must be refused):
 
@@ -321,11 +349,24 @@ def judge_prompt(question: str, hits: Sequence[Hit]) -> str:
         "Decide whether these passages contain enough to answer the question. Do not "
         "answer it.\n\n"
         "Judge only what is present. You have background knowledge about these "
-        "papers; ignore it entirely. If the passages are about the right topic but "
-        "the WRONG PAPER, that is not sufficient.\n\n"
+        "papers; ignore it entirely.\n\n"
+        "TWO WAYS THE PASSAGES CAN LOOK RIGHT AND BE INSUFFICIENT. Check both:\n"
+        "  (a) RIGHT TOPIC, WRONG PAPER. The passages discuss what was asked about, "
+        "but come from a different paper than the question names. Insufficient.\n"
+        "  (b) RIGHT PAPER, WRONG TOPIC. The passages come from the paper the "
+        "question names, but do not contain the specific thing asked about. This is "
+        "the easier one to miss: the passages look authoritative and on-brand for the "
+        "question, and they simply do not answer it. Insufficient.\n\n"
+        "Case (b) often means the question's premise is wrong -- it attributes "
+        "something to a paper that does not contain it. Say so in `missing`, naming "
+        "the thing that is absent, so the next search can look elsewhere.\n\n"
         "Set `is_multi_part` true if the question asks about two or more distinct "
         "things that would need separate evidence -- for example comparing two "
         "papers, or asking how one method extends another.\n\n"
+        "EXAMPLE of (b): the question asks which section of the Alpha paper describes "
+        "its 4-bit quantisation, and every passage is from the Alpha paper but about "
+        "low-rank decomposition. Verdict: insufficient. Missing: \"the Alpha passages "
+        "contain no quantisation scheme; the premise may be misattributed\".\n\n"
         f"QUESTION: {question}\n\n"
         f"--- PASSAGES ---\n{listing}\n--- END PASSAGES ---\n\n"
         "If insufficient, say concisely in `missing` what evidence is absent.\n\n"
