@@ -5,7 +5,7 @@
   "sentences": [
     {
       "idx": 0,
-      "text": "We build RAG models where the parametric memory is a pre-trained seq2seq transformer, and the non-parametric memory is a dense vector index of Wikipedia, accessed with a pre-trained neural retriever.",
+      "text": "We combine a pre-trained retriever (Query Encoder + Document Index) with a pre-trained seq2seq model (Generator) and fine-tune end-to-end.",
       "cite": [
         "p_rag_0000"
       ],
@@ -60,6 +60,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_0d2562c7be97"
+  "latency_ms": 5077,
+  "turn_id": "t_5bf1d1d14d8c"
 }

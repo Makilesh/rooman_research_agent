@@ -1,6 +1,6 @@
 # How many attention heads does the base Transformer use, and what is the dimension of each head?
 
-In this work we employ h = 8 parallel attention layers, or heads.[^1][^2] For each of these we use dk = dv = dmodel/h = 64.[^1][^2]
+We employ h = 8 parallel attention layers, or heads.[^1] For each of these we use dk = dv = dmodel/h = 64.[^1][^2]
 
 ## Sources
 
@@ -10,7 +10,7 @@ In this work we employ h = 8 parallel attention layers, or heads.[^1][^2] For ea
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 4827 ms
 - Passages in context: 3
-- Top rerank score: 0.9612
+- Top rerank score: 0.9463
 - Sentence verification: verified 2

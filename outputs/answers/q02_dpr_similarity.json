@@ -5,12 +5,12 @@
   "sentences": [
     {
       "idx": 0,
-      "text": "Our experiments show that using triplet loss does not affect the results much.",
+      "text": "We define the similarity between the question and the passage using the dot product of their vectors: sim(q, p) = EQ(q)⊺EP (p).",
       "cite": [
-        "p_dpr_0009"
+        "p_dpr_0001"
       ],
       "verify_scores": {
-        "p_dpr_0009": 0.6751223802566528
+        "p_dpr_0001": 1.0
       },
       "status": "verified"
     },
@@ -29,12 +29,12 @@
       "idx": 2,
       "text": "We thus choose the simpler inner product function and improve the dense passage retriever by learning better encoders.",
       "cite": [
-        "p_dpr_0001"
+        "p_dpr_0004"
       ],
       "verify_scores": {
-        "p_dpr_0001": 1.0
+        "p_dpr_0004": 0.08240150660276413
       },
-      "status": "verified"
+      "status": "unverified"
     }
   ],
   "sources": [
@@ -71,6 +71,6 @@
   ],
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_a0b4bd896563"
+  "latency_ms": 7172,
+  "turn_id": "t_12539a4730ef"
 }
