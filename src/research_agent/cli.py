@@ -459,70 +459,69 @@ def _load_models(cfg: Config):
 
 
 def _answer_once(cfg: Config, question: str, provider: str | None,
-                 save: str | None, show_retrieval: bool, quiet: bool = False):
-    """Retrieve, synthesise, verify, persist, render. One turn, end to end."""
+                 save: str | None, show_retrieval: bool,
+                 quiet: bool = False, trace: bool = False):
+    """One single-turn question, through the same state machine `chat` uses.
+
+    Deliberately not a second implementation. An earlier version duplicated the
+    retrieve/synthesise/verify pipeline here, which meant `ask` silently missed every
+    capability added to the conversational path -- the sufficiency loop among them.
+    A single-turn question is just a session with one turn.
+    """
     conn = db.connect(cfg)
     db.migrate(conn)
 
     stale = index_mod.check_staleness(cfg, conn)
     if stale:
-        _fail("index is stale", stale)
+        _fail('index is stale', stale)
         raise typer.Exit(1)
 
-    embedder, vectors, reranker = _load_models(cfg)
+    models = _load_models(cfg)
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
+    session_id = conversation.new_session(conn, index_mod.load_fingerprint(conn))
 
-    dense = retrieve.dense_search(
-        conn, retrieve.embed_query(embedder, question), vectors, cfg)
-    sparse = retrieve.sparse_search(conn, question, cfg)
-    fused = retrieve.reciprocal_rank_fusion(dense, sparse, cfg)
-    top = rerank_mod.rerank(reranker, question, fused, cfg)
-    # Retrieval wants precision, synthesis wants context: answer over the parent
-    # passages the winning children came from.
-    context_hits = retrieve.fit_context_budget(
-        retrieve.expand_to_parents(conn, top), cfg,
-        count_tokens=index_mod.token_counter(embedder),
-    )
+    try:
+        result = agent.run_turn(cfg, conn, client, models, session_id, question,
+                                provider=provider)
+    except answer_mod.InventedCitation as exc:
+        _fail('fabricated citation', str(exc))
+        raise typer.Exit(1)
+    except QuotaExhausted as exc:
+        _fail('quota exhausted', str(exc))
+        raise typer.Exit(1)
 
-    if show_retrieval:
-        t = Table(show_edge=False, title_justify="left", title="CONTEXT")
-        for c, j in (("#", "right"), ("rerank", "right"), ("chunk", "left"),
-                     ("paper", "left"), ("page", "right")):
-            t.add_column(c, justify=j)  # type: ignore[arg-type]
-        for h in context_hits:
-            t.add_row(str(h.rank), f"{h.rerank_score:.4f}" if h.rerank_score else "-",
+    if trace and result.trace is not None:
+        console.rule('[bold]AGENT TRACE')
+        for line in result.trace.render():
+            console.print(line, markup=False, highlight=False)
+        console.print()
+
+    if show_retrieval and result.answer is not None:
+        t = Table(show_edge=False, title_justify='left', title='CONTEXT')
+        for c, j in (('#', 'right'), ('rerank', 'right'), ('chunk', 'left'),
+                     ('paper', 'left'), ('page', 'right')):
+            t.add_column(c, justify=j)
+        for h in result.answer.hits:
+            t.add_row(str(h.rank),
+                      f'{h.rerank_score:.4f}' if h.rerank_score else '-',
                       h.chunk_id, h.doc_id, str(h.page_start))
         console.print(t)
         console.print()
 
-    client = LLMClient(cfg=cfg, conn=conn,
-                       api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
-    try:
-        result = answer_mod.synthesise(cfg, client, question, context_hits,
-                                       provider=provider)
-    except answer_mod.InventedCitation as exc:
-        _fail("fabricated citation", str(exc))
-        raise typer.Exit(1)
-    except QuotaExhausted as exc:
-        _fail("quota exhausted", str(exc))
-        raise typer.Exit(1)
-
-    result = verify_mod.verify_answer(cfg, reranker, result)
-
-    route = "refuse" if result.is_refusal else "answer"
-    session = answer_mod.ensure_session(
-        conn, f"s_ask_{uuid.uuid4().hex[:8]}", index_mod.load_fingerprint(conn))
-    turn_id = answer_mod.persist(conn, result, session, ord_=1, route=route)
-    result = replace(result, turn_id=turn_id)
-
-    # rich treats [unverified] and [^1] as console markup and swallows them.
     if not quiet:
-        console.print(report.render_answer_markdown(result), markup=False,
-                      highlight=False)
+        if result.clarification:
+            console.print(result.clarification, markup=False)
+        elif result.answer is None:
+            console.print(f'**Refused.** {result.route.reason}', markup=False)
+        else:
+            console.print(report.render_answer_markdown(result.answer),
+                          markup=False, highlight=False)
 
-    if save:
-        md, js = report.write_answer(cfg, result, save)
+    if save and result.answer is not None:
+        md, js = report.write_answer(cfg, result.answer, save)
         if not quiet:
-            _ok(f"wrote {md.relative_to(cfg.repo_root)} and {js.name}")
+            _ok(f'wrote {md.relative_to(cfg.repo_root)} and {js.name}')
     return result
 
 
@@ -538,11 +537,12 @@ def ask(
     show_retrieval: bool = typer.Option(
         False, "--show-retrieval", help="Also print the retrieval tables."
     ),
+    trace: bool = typer.Option(False, "--trace", help="Print the agent loop trace."),
 ) -> None:
     """Ask a question and get a cited answer, or an explicit refusal."""
     cfg = Config.load()
     if not retrieve_only:
-        _answer_once(cfg, question, provider, save, show_retrieval)
+        _answer_once(cfg, question, provider, save, show_retrieval, trace=trace)
         return
     conn = db.connect(cfg)
     db.migrate(conn)
@@ -832,34 +832,44 @@ def answer_all(
     for item in items:
         console.print(f"[dim]-> {item.id}[/dim]")
         try:
-            result = _answer_once(cfg, item.question, provider, item.id,
-                                  show_retrieval=False, quiet=True)
-            invented = result.cited_chunk_ids - {h.chunk_id for h in result.hits}
+            turn = _answer_once(cfg, item.question, provider, item.id,
+                                show_retrieval=False, quiet=True)
+            ans = turn.answer
+            invented = (ans.cited_chunk_ids - {h.chunk_id for h in ans.hits}
+                        if ans else set())
+            papers = ({h.doc_id for h in ans.hits if h.chunk_id in ans.cited_chunk_ids}
+                      if ans else set())
             rows.append({
                 "id": item.id, "class": item.cls,
                 "expected": "abstain" if item.must_abstain else "answer",
-                "actual": "abstain" if result.is_refusal else "answer",
+                "actual": turn.decision,
                 "schema_ok": True, "invented": len(invented),
-                "n_sent": len(result.sentences),
-                "n_cites": len(result.cited_chunk_ids),
-                "verified": sum(1 for s in result.sentences if s.status == "verified"),
-                "ms": result.latency_ms,
+                "n_sent": len(ans.sentences) if ans else 0,
+                "n_cites": len(ans.cited_chunk_ids) if ans else 0,
+                "papers": len(papers),
+                "verified": (sum(1 for s in ans.sentences if s.status == "verified")
+                             if ans else 0),
+                "loops": turn.n_loops,
+                "subs": len(turn.sub_questions),
+                "ms": turn.latency_ms,
             })
         except Exception as exc:
             rows.append({"id": item.id, "class": item.cls,
                          "expected": "abstain" if item.must_abstain else "answer",
                          "actual": f"ERROR {type(exc).__name__}", "schema_ok": False,
-                         "invented": 0, "n_sent": 0, "n_cites": 0, "verified": 0,
-                         "ms": 0})
+                         "invented": 0, "n_sent": 0, "n_cites": 0, "papers": 0,
+                         "verified": 0, "loops": 0, "subs": 0, "ms": 0})
             _fail(item.id, f"{type(exc).__name__}: {exc}")
 
     t = Table(show_edge=False)
-    for c in ("id", "class", "expected", "actual", "sent", "cites", "verified", "ms"):
-        t.add_column(c, justify="right" if c in ("sent", "cites", "verified", "ms") else "left")
+    numeric = ("sent", "cites", "papers", "verified", "loops", "subs", "ms")
+    for c in ("id", "class", "expected", "actual") + numeric:
+        t.add_column(c, justify="right" if c in numeric else "left")
     for r in rows:
         mark = "" if r["actual"].startswith(r["expected"][:6]) else "  <-- MISMATCH"
         t.add_row(r["id"], r["class"], r["expected"], r["actual"] + mark,
-                  str(r["n_sent"]), str(r["n_cites"]), str(r["verified"]), str(r["ms"]))
+                  str(r["n_sent"]), str(r["n_cites"]), str(r["papers"]),
+                  str(r["verified"]), str(r["loops"]), str(r["subs"]), str(r["ms"]))
     console.print()
     console.print(t)
 
