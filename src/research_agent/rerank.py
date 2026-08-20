@@ -12,7 +12,6 @@ and the floor comes from the observed distribution rather than from another proj
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from typing import Sequence
 
@@ -40,42 +39,51 @@ def load_reranker(cfg: Config):
     )
 
 
-def _sigmoid(x: float) -> float:
-    # The model emits an unbounded logit. Squashing to [0,1] is what makes a threshold
-    # interpretable and comparable across queries.
-    if x >= 0:
-        return 1.0 / (1.0 + math.exp(-x))
-    e = math.exp(x)
-    return e / (1.0 + e)
+def _assert_squashed(model) -> None:
+    """Confirm the model applies its own sigmoid, and never squash twice.
+
+    Caught the hard way. `CrossEncoder.predict()` applies `Sigmoid()` by default, so
+    squashing the result again maps the true range [0.0, 0.998] onto [0.5, 0.73].
+    Nothing errors -- the scores still sort, the pipeline still runs -- but every
+    passage looks equally relevant, the bimodal separation vanishes, and any threshold
+    derived from that distribution is meaningless. This is checked rather than assumed
+    because a library default is not a contract.
+    """
+    import torch
+
+    activation = getattr(model, "activation_fn", None)
+    if not isinstance(activation, torch.nn.Sigmoid):
+        raise RuntimeError(
+            f"Expected CrossEncoder.activation_fn to be Sigmoid, found {activation!r}. "
+            f"Scores would be raw logits rather than [0,1], and every measured "
+            f"threshold would be on the wrong scale."
+        )
 
 
 def rerank(model, query: str, hits: Sequence[Hit], cfg: Config) -> list[Hit]:
-    """Score (query, chunk) pairs and return the top-N, sigmoid-squashed."""
+    """Score (query, chunk) pairs and return the top-N in [0,1]."""
     candidates = list(hits[: cfg.rerank_candidates])
     if not candidates:
         return []
 
-    pairs = [(query, h.text) for h in candidates]
-    raw = model.predict(pairs, batch_size=cfg.rerank_batch_size, show_progress_bar=False)
-    scored = [
-        replace(h, rerank_score=_sigmoid(float(s)))
-        for h, s in zip(candidates, np.asarray(raw).reshape(-1))
-    ]
+    scores = score_pairs(model, [(query, h.text) for h in candidates], cfg)
+    scored = [replace(h, rerank_score=s) for h, s in zip(candidates, scores)]
     scored.sort(key=lambda h: -(h.rerank_score or 0.0))
     return [replace(h, rank=i + 1) for i, h in enumerate(scored[: cfg.context_top_n])]
 
 
 def score_pairs(model, pairs: Sequence[tuple[str, str]], cfg: Config) -> list[float]:
-    """Sigmoid-squashed scores for arbitrary (query, text) pairs.
+    """Relevance in [0,1] for arbitrary (query, text) pairs.
 
     Used by the threshold derivation and, at Step 8, by groundedness verification --
     where the "query" is an answer sentence rather than a user question.
     """
     if not pairs:
         return []
+    _assert_squashed(model)
     raw = model.predict(list(pairs), batch_size=cfg.rerank_batch_size,
                         show_progress_bar=False)
-    return [_sigmoid(float(s)) for s in np.asarray(raw).reshape(-1)]
+    return [float(s) for s in np.asarray(raw).reshape(-1)]
 
 
 # ---------------------------------------------------------------------------
