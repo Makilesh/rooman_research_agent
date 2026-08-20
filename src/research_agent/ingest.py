@@ -102,6 +102,9 @@ _LIGATURES = {
 # Joining unconditionally would corrupt genuine compounds split across lines, and
 # this corpus is full of them ("low-rank", "fine-tuning", "state-of-the-art").
 _HYPHEN_BREAK = re.compile(r"(\w)-\n([a-z])")
+# Titles and section headings are typeset in caps, so a hyphen break there reads
+# UPPER-\nCASE and the lowercase rule above misses it completely.
+_HYPHEN_BREAK_CAPS = re.compile(r"([A-Z])-\n([A-Z])")
 _SOFT_BREAK = re.compile(r"(?<![.!?:;])\n(?=[a-z(])")
 _MULTI_BLANK = re.compile(r"\n{3,}")
 _PAGE_NUMBER_ONLY = re.compile(r"^\s*\d{1,3}\s*$")
@@ -116,6 +119,7 @@ def clean_text(raw: str) -> str:
     text = text.replace("­", "")          # soft hyphen
     text = text.replace("’", "'").replace("“", '"').replace("”", '"')
     text = _HYPHEN_BREAK.sub(r"\1\2", text)
+    text = _HYPHEN_BREAK_CAPS.sub(r"\1\2", text)
     # Rejoin lines the PDF broke mid-sentence, so chunks contain real sentences
     # rather than typesetting artifacts.
     text = _SOFT_BREAK.sub(" ", text)
@@ -255,7 +259,17 @@ def _order_band(band: list[Block], mid: float) -> list[Block]:
 # ---------------------------------------------------------------------------
 #  Section headings
 # ---------------------------------------------------------------------------
-_NUMBERED_HEADING = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+([A-Z][^\n]{2,80})\s*$")
+# Appendices are letter-numbered (A, B.2, D.4). A digits-only pattern misses them
+# entirely, so every appendix chunk inherits whatever section preceded it -- usually
+# "References", which is actively misleading context to hand the reranker.
+# The bare-letter form requires a title-cased continuation so that an ordinary
+# sentence starting "A model trained on..." is not mistaken for appendix A.
+_NUMBERED_HEADING = re.compile(
+    r"^\s*(\d+(?:\.\d+)*|[A-Z](?:\.\d+)+)\.?\s+([A-Z][^\n]{2,80})\s*$"
+)
+_APPENDIX_HEADING = re.compile(
+    r"^\s*(?:Appendix\s+)?([A-Z])\s+((?:[A-Z][\w-]*\s*){1,8})\s*$"
+)
 _NAMED_HEADING = re.compile(
     r"^\s*(Abstract|Introduction|Related Work|Background|Method|Methods|Approach|"
     r"Experiments|Experimental Setup|Results|Discussion|Conclusion|Conclusions|"
@@ -280,6 +294,9 @@ def detect_heading(line: str) -> str | None:
     m = _NAMED_HEADING.match(stripped)
     if m:
         return m.group(1).title()
+    m = _APPENDIX_HEADING.match(stripped)
+    if m:
+        return f"{m.group(1)} {m.group(2).strip()}"
     return None
 
 

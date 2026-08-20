@@ -16,6 +16,8 @@ from rich.table import Table
 
 from . import corpus, db
 from . import ingest as ingest_mod
+from . import index as index_mod
+from . import retrieve
 from .config import Config
 from .llm import LLMClient, OllamaProvider
 
@@ -366,6 +368,117 @@ def ingest(
                       f"page {page} · read as {target.n_columns} column(s) ──[/bold cyan]")
         console.print(target.text[:chars].replace("\n", " ⏎ "))
         console.print()
+
+
+@app.command("index")
+def index_cmd() -> None:
+    """Chunk every ingested document, embed the children, build both indexes."""
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stats = index_mod.build(cfg, conn, on_event=console.print)
+
+    console.print()
+    console.print(f"  documents        {stats.n_documents}")
+    console.print(f"  child chunks     {stats.n_children}")
+    console.print(f"  parent chunks    {stats.n_parents}")
+    console.print(f"  dimensions       {stats.dims}")
+    console.print(f"  device           {stats.device}")
+    console.print(f"  peak VRAM        {stats.peak_vram_gb:.2f} GiB")
+    console.print(f"  elapsed          {stats.seconds:.1f}s "
+                  f"({stats.chunks_per_second:.1f} chunks/sec)")
+    console.print(f"  fingerprint      {stats.fingerprint}")
+
+    rows = db.all_rows(conn, "SELECT token_count, page_start FROM chunks WHERE level = 0")
+    counts = sorted(r["token_count"] for r in rows)
+    console.print()
+    console.print(f"  child tokens     min {counts[0]}  median {counts[len(counts)//2]}  "
+                  f"max {counts[-1]}  mean {sum(counts)/len(counts):.0f}")
+
+    # Assertions the spec requires of every chunk.
+    problems = 0
+    null_pages = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE page_start IS NULL")
+    if null_pages:
+        _fail(f"{null_pages} chunks have no page_start", "citations depend on it")
+        problems += 1
+    tiny = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE level = 0 AND token_count < ?",
+                     (cfg.min_chunk_tokens,))
+    over = db.scalar(conn, "SELECT COUNT(*) FROM chunks WHERE level = 0 AND token_count > ?",
+                     (cfg.embed_max_tokens,))
+    console.print()
+    if null_pages == 0:
+        _ok("every chunk has a page_start")
+    if tiny:
+        _warn(f"{tiny} child chunk(s) below the {cfg.min_chunk_tokens}-token floor")
+    else:
+        _ok(f"no child chunk below the {cfg.min_chunk_tokens}-token floor")
+    if over:
+        _fail(f"{over} child chunk(s) exceed the encoder window ({cfg.embed_max_tokens})",
+              "they would be silently truncated, losing cited evidence")
+        problems += 1
+    else:
+        _ok(f"no child chunk exceeds the {cfg.embed_max_tokens}-token encoder window")
+
+    if problems:
+        raise typer.Exit(1)
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="The question to retrieve for."),
+    retrieve_only: bool = typer.Option(
+        False, "--retrieve-only", help="Show retrieval only; no generation."
+    ),
+    k: int = typer.Option(10, "--k", help="How many results to show per retriever."),
+) -> None:
+    """Retrieve for a question. Generation arrives at Step 7."""
+    if not retrieve_only:
+        console.print("[yellow]Only --retrieve-only is implemented so far "
+                      "(generation lands at Step 7).[/yellow]")
+        raise typer.Exit(1)
+
+    cfg = Config.load()
+    conn = db.connect(cfg)
+    db.migrate(conn)
+
+    stale = index_mod.check_staleness(cfg, conn)
+    if stale:
+        _fail("index is stale", stale)
+        raise typer.Exit(1)
+
+    model = index_mod.load_embedder(cfg)
+    vectors = index_mod.load_vectors(cfg)
+    qvec = retrieve.embed_query(model, question)
+
+    dense = retrieve.dense_search(conn, qvec, vectors, cfg, k=k)
+    sparse = retrieve.sparse_search(conn, question, cfg, k=k)
+
+    console.print(f"\n[bold]{question}[/bold]")
+    console.print(f"[dim]FTS5 MATCH: {retrieve.build_fts_query(question)}[/dim]\n")
+
+    t = Table(show_edge=False, title="DENSE — bge-m3 cosine", title_justify="left")
+    for c, j in (("#", "right"), ("score", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in dense:
+        t.add_row(str(h.rank), f"{h.dense_score:.4f}", h.doc_id, str(h.page_start),
+                  (h.section or "")[:24], " ".join(h.text.split())[:70])
+    console.print(t)
+    console.print()
+
+    t2 = Table(show_edge=False, title="SPARSE — SQLite FTS5 bm25()", title_justify="left")
+    for c, j in (("#", "right"), ("score", "right"), ("paper", "left"),
+                 ("page", "right"), ("section", "left"), ("text", "left")):
+        t2.add_column(c, justify=j)  # type: ignore[arg-type]
+    for h in sparse:
+        t2.add_row(str(h.rank), f"{h.sparse_score:.3f}", h.doc_id, str(h.page_start),
+                   (h.section or "")[:24], " ".join(h.text.split())[:70])
+    console.print(t2)
+
+    overlap = {h.chunk_id for h in dense} & {h.chunk_id for h in sparse}
+    console.print(f"\n[dim]{len(overlap)}/{k} chunks appear in both lists — "
+                  f"the disagreement is what hybrid retrieval exists to exploit.[/dim]")
 
 
 @app.command("db")
