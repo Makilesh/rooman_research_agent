@@ -274,8 +274,18 @@ def reset(cfg: Config, confirm: bool = False) -> None:
         )
     for suffix in ("", "-wal", "-shm"):
         p = Path(str(cfg.db_path) + suffix)
-        if p.exists():
+        if not p.exists():
+            continue
+        try:
             p.unlink()
+        except PermissionError as exc:
+            # Windows refuses to unlink a file that any process still has open, and
+            # a raw WinError 32 tells the caller nothing useful.
+            raise RuntimeError(
+                f"Cannot delete {p}: a connection to it is still open. Close every "
+                f"connection (or exit any other running `research-agent` process) "
+                f"before resetting."
+            ) from exc
 
 
 # ---------------------------------------------------------------------------

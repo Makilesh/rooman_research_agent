@@ -18,6 +18,14 @@ from . import db
 from .config import Config
 from .llm import LLMClient, OllamaProvider
 
+# Windows consoles default to cp1252, which cannot encode box-drawing characters,
+# em dashes, or the accented author names and mathematical symbols that arXiv text
+# is full of. Piping output then dies with a UnicodeEncodeError several layers deep
+# in the renderer. Reconfiguring here fixes every command at once.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 app = typer.Typer(add_completion=False, help="Cited research agent.")
 console = Console()
 

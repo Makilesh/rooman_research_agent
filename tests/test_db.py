@@ -120,10 +120,23 @@ def test_corpus_state_roundtrip_and_overwrite(conn):
 
 
 def test_reset_refuses_without_confirmation(cfg: Config):
-    db.migrate(db.connect(cfg))
+    c = db.connect(cfg)
+    db.migrate(c)
     assert cfg.db_path.exists()
     with pytest.raises(RuntimeError, match="confirm=True"):
         db.reset(cfg)
     assert cfg.db_path.exists(), "a refused reset must not have deleted anything"
+    c.close()
     db.reset(cfg, confirm=True)
     assert not cfg.db_path.exists()
+
+
+def test_reset_on_an_open_database_explains_itself(cfg: Config):
+    """Windows will not unlink an open file, and WinError 32 tells the user nothing."""
+    c = db.connect(cfg)
+    db.migrate(c)
+    try:
+        with pytest.raises(RuntimeError, match="still open"):
+            db.reset(cfg, confirm=True)
+    finally:
+        c.close()

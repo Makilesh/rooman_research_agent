@@ -210,3 +210,168 @@ output; `GET /api/tags` returned six models immediately.
 **Revisit if:** a future capability is only reachable through the CLI.
 **README line:** "Ollama is driven over its HTTP API rather than by shelling out, so
 every probe has a real timeout and `doctor` can never hang."
+
+---
+
+## D-003 · A SQLite-backed sliding-window limiter, not an in-memory one
+**Date:** 2026-08-20
+**Context:** Gemini's free tier caps requests per minute *and* per day. The agent is
+a CLI: a short-lived process that starts, answers, and exits.
+**Options:** (a) an in-process token bucket or sliding window; (b) a lock file with
+counters; (c) windowed `COUNT(*)` over durable `llm_calls` rows.
+**Decision:** (c). Every attempt writes a row; RPM and RPD are derived by counting
+rows inside a time window.
+**Why:** An in-memory limiter resets on every invocation, so against a *daily* cap it
+enforces exactly nothing — you exhaust a 20-request budget across twenty separate CLI
+runs and the limiter reports full capacity the whole way. It is not a weak limiter, it
+is a decorative one. Deriving from durable rows makes the limit correct across
+restarts, which is the only property that matters here.
+**Consequence:** One row per attempt, and a `(model, key_alias, ts)` index to keep the
+windowed counts cheap. The ledger doubles as the source for "LLM calls per turn, split
+by ladder" in the evaluation.
+**Evidence:** Measured, 2026-08-20. Two separate OS processes against one database
+file, top rung RPD=3: process 1 served `[model-A, model-A, model-A]`; process 2, a
+fresh process, was correctly stepped down and served `[model-B]`. The same script with
+a fresh database per process — which is what an in-memory limiter amounts to — served
+`model-A` again from process 2, over an already-exhausted cap. Unit test:
+`test_consumed_rpd_survives_a_process_restart`.
+**Revisit if:** the agent ever becomes a long-lived service, where an in-memory window
+in front of the ledger would cut read volume. The ledger stays either way.
+**README line:** "A daily rate limit cannot be enforced from a process that exits
+between every request, so the limiter counts durable rows rather than in-memory state
+— demonstrated by draining a rung in one process and watching a second process
+correctly step down."
+
+---
+
+## D-004 · Ladder ordering, and where gemini-2.5-flash-lite belongs
+**Date:** 2026-08-20
+**Context:** A conversational turn costs roughly one synthesis call plus two to four
+volume calls: condensation, sufficiency judging, optional rewriting, optional
+decomposition.
+**Options:** (a) one ladder ordered purely by capability; (b) two ladders, split by
+what the call is for.
+**Decision:** (b). A **synthesis** ladder ordered by capability, and a **volume**
+ladder ordered by daily capacity. Judge and condense calls may never touch synthesis
+rungs. Within a rung, every key is drained before stepping down.
+**Why:** Routing volume work through synthesis models exhausts reasoning quota in
+about four turns, and the failure lands on answer generation — the one thing a
+reviewer sees. Splitting the ladders means capacity is spent where it is cheap and
+**answer quality degrades last**. Draining keys before rungs preserves capability:
+stepping down while another key still has quota on the current rung throws away a
+better model for nothing.
+**The trap:** `gemini-2.5-flash-lite` is named like a volume model and is capped at
+**20 RPD**, not 500. Placed on the volume ladder it exhausts silently after twenty
+condensation calls and cascades failures into the agent path, where the cause is
+almost unfindable. It sits at the **bottom of the synthesis ladder**.
+`Config.validate()` raises if anyone moves it, and three tests cover the placement.
+**Consequence:** Two ladders to keep current as model names change. They are data in
+`config.py`, not code, and `doctor` prints both so drift is visible.
+**Evidence:** `test_trap_model_on_the_volume_ladder_fails_config_validation`,
+`test_volume_and_synthesis_land_on_their_own_ladders`,
+`test_rpd_exhaustion_steps_down_a_rung_rather_than_failing`.
+**Revisit if:** published free-tier limits change — which is why `doctor` prints the
+ladders rather than leaving them implicit.
+**README line:** "Two ladders, split by purpose rather than capability alone:
+gemini-2.5-flash-lite is named like a volume model but capped at 20 RPD, and the
+config refuses to start if anyone puts it on the volume ladder."
+
+---
+
+## D-005 · Two cache layers, exact before semantic
+**Date:** 2026-08-20
+**Context:** Development and evaluation re-run the same prompts constantly.
+**Options:** (a) no cache; (b) exact prompt-hash cache only; (c) exact plus a semantic
+cache over near-paraphrases.
+**Decision:** (c), but with the layers doing clearly different jobs. Layer one is
+`sha256(model + prompt + params)` on disk in `.cache/llm/`. Layer two is the semantic
+answer cache keyed on the condensed-query embedding, cosine ≥ 0.97 within one corpus
+fingerprint.
+**Why:** Layer one is non-negotiable — without it a single debugging session eats the
+day's synthesis quota, and eval re-runs become unaffordable. Layer two costs almost
+nothing because the condensed query is already embedded for retrieval, so the cache
+key is free.
+**Honest prediction, recorded now so it cannot be quietly revised later:** layer two
+will show a hit rate at or near zero on this workload. Twelve deliberately distinct
+questions and thirteen conversation turns give it almost nothing to match, and layer
+one already absorbs every exact re-run. It is built because it is specified and cheap,
+and its measured hit rate will be reported as measured — including if that number is
+zero.
+**Consequence:** Cache hits still write a ledger row, with `cached=1`, and are excluded
+from every quota window. Cache correctness therefore cannot silently corrupt quota
+accounting. A corrupt cache file is treated as a miss rather than an exception.
+**Evidence:** `test_cache_hit_makes_zero_transport_calls_but_still_writes_a_ledger_row`,
+`test_cached_calls_do_not_consume_quota`,
+`test_a_corrupt_cache_entry_is_a_miss_not_a_crash`. Measured semantic hit rate: TBD at
+Step 12.
+**Revisit if:** the measured semantic hit rate is zero across the full evaluation, in
+which case the README reports it as a feature that did not pay for itself rather than
+pretending otherwise.
+**README line:** "Two cache layers: an exact prompt-hash cache that makes evaluation
+re-runs free, and a semantic cache whose measured hit rate is reported honestly even
+where it is zero."
+
+---
+
+## D-106 · Ledger rows are written at attempt time, not at completion
+**Date:** 2026-08-20
+**Context:** The limiter could record a call before making it or after it returns.
+**Options:** (a) write on success; (b) write on completion, success or failure;
+(c) reserve a row before the request, then update it with the outcome.
+**Decision:** (c).
+**Why:** The provider counts a failed request against quota too, so recording only
+successes understates usage and lets the limiter authorise calls the provider will
+reject. Worse, (a) and (b) both lose the record entirely if the process is killed
+mid-call — the one situation where accurate accounting matters most. Reserving first
+means a crash leaves an `ok IS NULL` row that still counts, which is the conservative
+direction to be wrong in.
+**Consequence:** `ok IS NULL` rows are real and expected; they mean "attempted, outcome
+unknown". A malformed-JSON retry reserves its own slot and is logged as
+`<purpose>:retry`, because charging one request for two is how a ledger drifts out of
+step with the quota it models.
+**Evidence:** `test_malformed_json_retries_exactly_once_then_raises` asserts both the
+retry count and that both attempts appear in the ledger as failures.
+**Revisit if:** never — being wrong toward over-counting is the correct bias for a free
+tier.
+**README line:** "Quota is charged at attempt time, not on success, so a failed or
+crashed request still counts — the same way the provider counts it."
+
+---
+
+## D-107 · RPD is a rolling 24-hour window, not a calendar day
+**Date:** 2026-08-20
+**Context:** Google's free-tier RPD resets at midnight Pacific. The ledger could model
+either a calendar day in some timezone or a rolling window.
+**Decision:** Rolling 24 hours.
+**Why:** A calendar day requires the local process to agree with Google about the reset
+boundary and the timezone. Getting it wrong in the permissive direction means issuing
+requests the provider rejects — which then fail inside the agent path. A rolling window
+can only ever be *conservative*: it may refuse slightly early, never slightly late.
+**Consequence:** After a heavy run, capacity returns gradually over the following day
+rather than all at once at a known instant. Acceptable for a tool run interactively.
+**Evidence:** `test_rpd_window_rolls_off_after_24h`.
+**Revisit if:** the reset boundary ever needs to be exact, e.g. for a scheduled batch.
+**README line:** "The daily window is rolling rather than calendar-based, so the limiter
+can only ever refuse early, never issue a request the provider will reject."
+
+---
+
+## D-108 · Console output is forced to UTF-8 at the entry point
+**Date:** 2026-08-20
+**Context:** `doctor` crashed with `UnicodeEncodeError: 'charmap' codec can't encode
+characters` from inside the renderer, several frames deep, on a plain Windows shell.
+**Decision:** `sys.stdout` and `sys.stderr` are reconfigured to UTF-8 with
+`errors="replace"` in `cli.py`, before anything prints.
+**Why:** Windows consoles default to cp1252, which cannot encode box-drawing
+characters, em dashes, or the accented author names and mathematical symbols that arXiv
+text is full of. This is not cosmetic: the crash happens at print time, deep in the
+rendering stack, and it would have surfaced later as "the agent dies on some papers and
+not others". Fixing it once at the entry point covers every command, including rendered
+answers containing citation text.
+**Consequence:** A character the terminal font cannot draw appears as a replacement
+glyph instead of terminating the process. Visibly degraded beats dead.
+**Evidence:** Reproduced then fixed during Step 1 — `doctor` failed on a bare
+`console.rule()` before the change and completed cleanly after it.
+**Revisit if:** never.
+**README line:** "Console output is forced to UTF-8, because arXiv text is full of
+characters that make a default Windows console raise mid-print."
