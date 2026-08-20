@@ -30,6 +30,46 @@ from .config import Config, Ladder, Rung
 RPM_WINDOW = timedelta(minutes=1)
 RPD_WINDOW = timedelta(hours=24)
 
+# Substrings that identify a permanently unusable key rather than a transient
+# failure. Matched on the exception text because the SDK surfaces these as generic
+# ClientErrors carrying a message rather than as distinct types.
+_PERMANENT_KEY_ERRORS = (
+    "denied access",
+    "API_KEY_INVALID",
+    "API key not valid",
+    "PERMISSION_DENIED",
+    "consumer has been suspended",
+)
+
+
+def is_permanent_key_error(exc: Exception) -> bool:
+    text = str(exc)
+    return any(marker.lower() in text.lower() for marker in _PERMANENT_KEY_ERRORS)
+
+
+# Failures that are worth trying again on another key or rung. A dropped connection
+# or a 5xx says nothing about the key -- aborting a 25-turn evaluation because one
+# request was disconnected wastes every call already spent.
+_TRANSIENT_ERRORS = (
+    "server disconnected",
+    "remoteprotocolerror",
+    "connection reset",
+    "connecterror",
+    "readtimeout",
+    "timed out",
+    "503",
+    "502",
+    "500 internal",
+    "unavailable",
+    "deadline exceeded",
+)
+
+
+def is_transient_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_ERRORS)
+
+
 # Pseudo-key for Ollama, which has no quota. Present so every ledger row has a
 # key_alias and `budget` needs no special case.
 LOCAL_KEY = "local"
@@ -56,6 +96,18 @@ class QuotaExhausted(RuntimeError):
 
 class MalformedResponse(RuntimeError):
     """The model returned something that is not valid JSON for the given schema."""
+
+
+class KeyRejected(RuntimeError):
+    """A key was refused for a reason no amount of waiting will fix.
+
+    Distinct from quota exhaustion, and the distinction is load-bearing. A saturated
+    key recovers on its own; a key whose project has been denied access, or which is
+    malformed or revoked, never will. Treating the second like the first would retry
+    it forever; treating it like a transport error would abort the turn even though
+    three other keys are sitting idle. Neither is right -- the key is disabled for the
+    process and rotation continues.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +430,10 @@ class LLMClient:
 
     def __post_init__(self) -> None:
         self.ledger = Ledger(self.conn, self.now)
+        # Keys refused for a permanent reason, skipped for the rest of
+        # this process. Not persisted: a key restored on the provider's
+        # side should work again on the next run without an edit here.
+        self.disabled_keys: dict[str, str] = {}
         self.cache = DiskCache(self.cfg.llm_cache_dir)
         if self.ollama is None:
             self.ollama = OllamaProvider(
@@ -479,6 +535,7 @@ class LLMClient:
             raise QuotaExhausted(ladder, [])
 
         tried: list[tuple[str, str]] = []
+        transient: list[str] = []
         for rung in rungs:
             sha = DiskCache.key(rung.model, prompt, params)
             hit = self.cache.get(sha)
@@ -492,6 +549,8 @@ class LLMClient:
             # another key still has quota on the current rung would throw away
             # capability for no reason.
             for alias, api_key in self.api_keys.items():
+                if alias in self.disabled_keys:
+                    continue
                 tried.append((rung.model, alias))
                 row_id = self.ledger.try_acquire(
                     rung.model, alias, rung.rpm, rung.rpd, purpose,
@@ -499,12 +558,34 @@ class LLMClient:
                 )
                 if row_id is None:
                     continue  # saturated -- next key, without sleeping
-                return self._invoke(
-                    provider_obj=self.gemini, provider_name="gemini", model=rung.model,
-                    api_key=api_key, timeout_s=self.cfg.gemini_timeout_s, prompt=prompt,
-                    schema=schema, sha=sha, row_id=row_id, key_alias=alias, ladder=ladder,
-                    purpose=purpose, rpm=rung.rpm, rpd=rung.rpd,
-                )
+                try:
+                    return self._invoke(
+                        provider_obj=self.gemini, provider_name="gemini",
+                        model=rung.model, api_key=api_key,
+                        timeout_s=self.cfg.gemini_timeout_s, prompt=prompt,
+                        schema=schema, sha=sha, row_id=row_id, key_alias=alias,
+                        ladder=ladder, purpose=purpose, rpm=rung.rpm, rpd=rung.rpd,
+                    )
+                except KeyRejected as exc:
+                    # Permanently unusable: disable it and try the next key rather
+                    # than failing the turn while other keys are idle.
+                    self.disabled_keys[alias] = str(exc)
+                    continue
+                except Exception as exc:
+                    # A dropped connection or a 5xx is about the network, not the
+                    # key. Move to the next key or rung; the loop is bounded, so a
+                    # persistent outage still terminates in QuotaExhausted rather
+                    # than spinning.
+                    if is_transient_error(exc):
+                        transient.append(f"{rung.model}/{alias}: {exc}")
+                        continue
+                    raise
+        if transient and len(transient) == len(tried):
+            # Nothing was actually exhausted -- every attempt hit the network.
+            raise RuntimeError(
+                f"Every {ladder} attempt failed with a transient network error, so "
+                f"no quota conclusion can be drawn: {transient[:3]}"
+            )
         raise QuotaExhausted(ladder, tried)
 
     def _invoke(
@@ -550,12 +631,14 @@ class LLMClient:
                 )
                 continue
             except Exception as exc:
-                # Transport, timeout, auth: the attempt still consumed a slot, and
-                # the caller needs the real error rather than a retry loop.
+                # The attempt still consumed a slot, so it is recorded either way.
                 self.ledger.finish(
                     current_row, ok=False,
                     latency_ms=int((self.monotonic() - started) * 1000), error=str(exc),
                 )
+                if is_permanent_key_error(exc):
+                    raise KeyRejected(
+                        f"{key_alias} was refused permanently: {exc}") from exc
                 raise
 
             latency_ms = int((self.monotonic() - started) * 1000)
@@ -569,6 +652,26 @@ class LLMClient:
             f"{model} returned unparseable JSON on {attempts} attempt(s). "
             f"Last error: {last_error}"
         )
+
+    def live_models(self) -> set[str]:
+        """Model ids the API reports as usable, for one key. No generation quota.
+
+        `ListModels` is free. The ladders are hand-maintained data copied from
+        published limits, and a stale entry only reveals itself at the moment real
+        quota is being spent -- which is the worst possible time. Checking costs one
+        metadata call.
+        """
+        if not self.api_keys:
+            return set()
+        from google import genai
+
+        client = genai.Client(api_key=next(iter(self.api_keys.values())))
+        out: set[str] = set()
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if not actions or "generateContent" in actions:
+                out.add(m.name.replace("models/", ""))
+        return out
 
     def warmup(self) -> bool:
         """Make one throwaway local call before any measurement.

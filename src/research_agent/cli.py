@@ -149,6 +149,24 @@ def doctor(
         console.print(t)
     _ok("ladder placement validated", "Config.validate() enforces the 2.5-flash-lite rule")
 
+    if keys:
+        # ListModels is free. A stale ladder entry otherwise reveals itself only when
+        # real quota is being spent, which is the worst possible moment.
+        try:
+            probe = LLMClient(cfg=cfg, conn=conn, api_keys=keys)
+            live = probe.live_models()
+            missing = [r.model for name in ("synthesis", "volume")
+                       for r in cfg.ladder(name) if r.model not in live]
+            if missing:
+                _fail(f"{len(missing)} ladder model(s) do not exist on this API",
+                      ", ".join(missing))
+                failures += 1
+            else:
+                _ok(f"all {len(cfg.synthesis_ladder) + len(cfg.volume_ladder)} ladder "
+                    f"models exist", f"checked against {len(live)} live models")
+        except Exception as exc:
+            _warn("could not verify ladder models", f"{type(exc).__name__}: {exc}")
+
     # -- GPU ---------------------------------------------------------------
     if gpu:
         console.rule("[bold]GPU")

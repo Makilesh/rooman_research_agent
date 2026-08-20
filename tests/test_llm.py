@@ -392,3 +392,59 @@ def test_budget_reports_every_rung_and_reflects_consumption(cfg, conn, clock):
     after = {(r["model"], r["key"]): r for r in client.budget()}[(top.model, "key_1")]
     assert after["rpd_used"] == 1
     assert after["rpd_left"] == top.rpd - 1
+
+
+# ---------------------------------------------------------------------------
+#  Permanently rejected keys
+# ---------------------------------------------------------------------------
+def test_a_permanently_rejected_key_is_skipped_not_fatal(cfg, conn, clock):
+    """Observed live: two of four real keys returned 403 PERMISSION_DENIED.
+
+    A 403 is not quota exhaustion -- waiting never fixes it. Re-raising would abort
+    the turn while working keys sat idle; retrying would loop forever. The key is
+    disabled for the process and rotation continues.
+    """
+    def transport(model, prompt, schema, api_key, timeout_s):
+        if api_key in {"dead1", "dead2"}:
+            raise RuntimeError("403 PERMISSION_DENIED. Your project has been "
+                               "denied access. Please contact support.")
+        return json.dumps({"answer": "from the working key"}), 5, 5
+
+    client = LLMClient(
+        cfg=cfg, conn=conn,
+        api_keys={"key_1": "dead1", "key_2": "dead2", "key_3": "alive"},
+        gemini=GeminiProvider(transport=transport), now=clock,
+    )
+    out = client.complete("p", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.key_alias == "key_3"
+    assert set(client.disabled_keys) == {"key_1", "key_2"}
+
+
+def test_a_disabled_key_is_not_retried_on_later_calls(cfg, conn, clock):
+    attempts: list[str] = []
+
+    def transport(model, prompt, schema, api_key, timeout_s):
+        attempts.append(api_key)
+        if api_key == "dead1":
+            raise RuntimeError("API_KEY_INVALID")
+        return json.dumps({"answer": "ok"}), 5, 5
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys={"key_1": "dead1", "key_2": "alive"},
+                       gemini=GeminiProvider(transport=transport), now=clock)
+    for i in range(3):
+        client.complete(f"p{i}", purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
+    assert attempts.count("dead1") == 1, "a dead key must be tried once, not every time"
+
+
+def test_quota_exhaustion_and_key_rejection_are_different(cfg, conn, clock):
+    """A saturated key recovers on its own; a rejected one never does. Conflating
+    them would either retry forever or give up while capacity remains."""
+    from research_agent.llm import is_permanent_key_error
+
+    assert is_permanent_key_error(RuntimeError("403 PERMISSION_DENIED"))
+    assert is_permanent_key_error(RuntimeError("API key not valid"))
+    assert not is_permanent_key_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert not is_permanent_key_error(RuntimeError("503 Service Unavailable"))

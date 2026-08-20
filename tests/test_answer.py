@@ -308,3 +308,46 @@ def test_unverified_sentences_are_marked_not_dropped(cfg):
     md = render_answer_markdown(ans)
     assert "Shaky claim." in md
     assert "[unverified]" in md
+
+
+# ---------------------------------------------------------------------------
+#  Schema portability across providers
+# ---------------------------------------------------------------------------
+def _union_types(node, path="root"):
+    bad = []
+    if isinstance(node, dict):
+        if isinstance(node.get("type"), list):
+            bad.append(f"{path}.type = {node['type']}")
+        for k, v in node.items():
+            bad += _union_types(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            bad += _union_types(v, f"{path}[{i}]")
+    return bad
+
+
+@pytest.mark.parametrize("name", [
+    "ANSWER_SCHEMA", "REPAIR_SCHEMA", "CONDENSE_SCHEMA", "CLARIFY_SCHEMA",
+    "JUDGE_SCHEMA", "DECOMPOSE_SCHEMA", "REWRITE_SCHEMA",
+])
+def test_no_schema_uses_a_union_type(name):
+    """Found by actually calling Gemini, not by reading the docs.
+
+    Ollama accepts `"type": ["string", "null"]`. Gemini's response_schema rejects it
+    before a request is even sent -- its type field is an enum admitting one value.
+    A schema that constrains only one of the two providers is not a contract, so
+    every schema must use the portable form.
+    """
+    schema = getattr(prompts, name)
+    assert _union_types(schema) == []
+
+
+def test_an_empty_refusal_reason_is_treated_as_absent(cfg, conn):
+    """The portable schema carries "no refusal" as an empty string rather than null."""
+    client = _client(cfg, conn, {
+        "insufficient_evidence": False, "refusal_reason": "",
+        "sentences": [{"text": "LoRA uses r = 4.", "cite": ["c_lora_0020"]}],
+    })
+    ans = synthesise(cfg, client, "q", HITS)
+    assert ans.refusal_reason is None
+    assert not ans.is_refusal

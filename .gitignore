@@ -1,12 +1,8 @@
-# ─── Private working notes — never published ─────────────────────────────────
-# These live in m/ and are not part of the deliverable. Listed by name as well as
-# by directory so they stay ignored if they are ever moved back to the root.
-m/
-rooman_plan.md
-CLAUDE_CODE_PROMPT.md
+
 
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
+/m
 
 # ─── Corpus ──────────────────────────────────────────────────────────────────
 # Fetched by `research-agent fetch` from data/manifest.yaml. The manifest is the

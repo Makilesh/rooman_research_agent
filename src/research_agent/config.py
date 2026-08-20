@@ -95,7 +95,10 @@ class Config:
     llm_temperature: float = 0.0
     llm_seed: int = 0
     gemini_key_env_prefix: str = "GEMINI_API_KEY_"
-    gemini_max_keys: int = 3
+    # Four keys across four separate Google Cloud projects. Free-tier quota is
+    # per PROJECT, so keys from one project share a bucket and rotation buys
+    # nothing; separate projects genuinely multiply capacity.
+    gemini_max_keys: int = 4
     gemini_timeout_s: float = 60.0
 
     # -- Hardware (section 6.1) ---------------------------------------------
