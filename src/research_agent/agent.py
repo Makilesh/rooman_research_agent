@@ -121,10 +121,12 @@ def run_turn(
     if fingerprint:
         cached = conversation.cache_lookup(conn, cfg, fingerprint, qvec)
         if cached is not None:
+            restored = answer_mod.from_cached(cached["answer"])
             return TurnResult(
                 session_id, ord_, raw_text, condensed,
-                router_mod.Route(router_mod.ANSWER, 1.0, "semantic cache hit", []),
-                None, None, cache_hit=True,
+                router_mod.Route(router_mod.ANSWER, 1.0,
+                                 f"semantic cache hit (cos {cached['score']:.4f})", []),
+                restored, None, cache_hit=True,
                 latency_ms=int((time.monotonic() - started) * 1000),
             )
 
