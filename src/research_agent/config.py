@@ -32,36 +32,68 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Rung:
-    """One model on one ladder, with its published free-tier limits."""
+    """One model on one ladder, with its published free-tier limits.
+
+    Three limits, not two. TPM is the one that is easy to forget because RPM usually
+    binds first -- five requests a minute of 8k-token prompts is 40k TPM against a
+    250k ceiling. It stops being irrelevant the moment prompts grow or a volume model
+    at 15 RPM starts carrying long context, so it is tracked rather than assumed.
+    """
 
     model: str
     rpm: int
     rpd: int
+    tpm: int = 250_000
+    # "gemini" or "ollama". A local rung has no provider-imposed quota and needs no
+    # key, so it can only ever sit at the BOTTOM of a ladder -- there is nothing to
+    # step down to after it.
+    provider: str = "gemini"
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider == "ollama"
 
 
 Ladder = Literal["synthesis", "volume"]
 
+# A local rung has no provider-imposed cap. Sentinels keep the ledger and limiter
+# paths identical for both providers rather than branching around them.
+UNLIMITED_RPM = 1_000_000_000
+UNLIMITED_RPD = 1_000_000_000
+UNLIMITED_TPM = 1_000_000_000
+
 # Capability-ordered. Drained top to bottom, across every key on a rung before
 # stepping down (spec section 7.2a).
 SYNTHESIS_LADDER: tuple[Rung, ...] = (
-    Rung("gemini-3.7-flash", rpm=5, rpd=20),
-    Rung("gemini-3.6-flash", rpm=5, rpd=20),
-    Rung("gemini-3.5-flash", rpm=5, rpd=20),
-    Rung("gemini-3-flash-preview", rpm=5, rpd=20),
-    Rung("gemini-2.5-flash", rpm=5, rpd=20),
-    # Named like a volume model, capped at 20 RPD. It belongs at the BOTTOM of the
-    # synthesis ladder and nowhere else: on the volume ladder it exhausts silently
-    # and cascades failures into the agent path (spec section 7.2b). Config.validate()
-    # enforces this; tests/test_llm.py fails if anyone moves it.
-    Rung("gemini-2.5-flash-lite", rpm=10, rpd=20),
+    Rung("gemini-3.7-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3.6-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3.5-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3-flash-preview", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-2.5-flash", rpm=5, rpd=20, tpm=250_000),
 )
 
 # Capacity-ordered, not capability-ordered. Serves condensation, sufficiency
 # judging, query rewriting and decomposition.
 VOLUME_LADDER: tuple[Rung, ...] = (
-    Rung("gemini-3.5-flash-lite", rpm=15, rpd=500),
-    Rung("gemini-3.1-flash-lite", rpm=15, rpd=500),
+    Rung("gemini-3.5-flash-lite", rpm=15, rpd=500, tpm=250_000),
+    Rung("gemini-3.1-flash-lite", rpm=15, rpd=500, tpm=250_000),
+    # Named like a volume model and capped at 20 RPD, not 500. It sits here rather
+    # than on the synthesis ladder now that the limiter records the real number and
+    # steps down on exhaustion: the original danger was never its placement, it was
+    # being MISTAKEN for a 500-RPD model and cascading silently. Config.validate()
+    # still refuses any declaration that gives it volume-scale RPD.
+    Rung("gemini-2.5-flash-lite", rpm=10, rpd=20, tpm=250_000),
+    # The floor. Local, unlimited, no key. With this rung present the agent cannot
+    # fail for lack of quota -- only because Ollama is not running, which `doctor`
+    # reports explicitly.
+    Rung("qwen2.5:14b", rpm=UNLIMITED_RPM, rpd=UNLIMITED_RPD,
+         tpm=UNLIMITED_TPM, provider="ollama"),
 )
+
+# Gemini 2.5 Pro and 3.1 Pro are published at 0/0/0 on this tier -- no access at all.
+# They are deliberately absent rather than listed-and-skipped: a rung the account
+# cannot use is not a fallback, it is a guaranteed failed attempt on the way down.
+NO_ACCESS_MODELS = frozenset({"gemini-2.5-pro", "gemini-3.1-pro-preview"})
 
 # Named so the assertion below reads as intent rather than a string literal
 # floating inside a guard clause.
@@ -95,7 +127,10 @@ class Config:
     llm_temperature: float = 0.0
     llm_seed: int = 0
     gemini_key_env_prefix: str = "GEMINI_API_KEY_"
-    gemini_max_keys: int = 3
+    # Four keys across four separate Google Cloud projects. Free-tier quota is
+    # per PROJECT, so keys from one project share a bucket and rotation buys
+    # nothing; separate projects genuinely multiply capacity.
+    gemini_max_keys: int = 4
     gemini_timeout_s: float = 60.0
 
     # -- Hardware (section 6.1) ---------------------------------------------
@@ -186,6 +221,18 @@ class Config:
     )
     fetch_timeout_s: float = 120.0
 
+    # When the synthesis ladder is fully drained, answer with a volume model rather
+    # than failing. Quality degrades; the agent keeps working. The reverse is never
+    # allowed -- see LLMClient._complete_gemini.
+    synthesis_falls_back_to_volume: bool = True
+
+    # -- Web search (Phase 8, optional, default OFF) ------------------------
+    # Supplementary only. The headline evaluation numbers are corpus-only, and the
+    # control questions must abstain identically with the flag off.
+    web_enabled: bool = False
+    web_results: int = 5
+    web_timeout_s: float = 12.0
+
     # -- Ops ----------------------------------------------------------------
     log_level: str = "INFO"
     sqlite_busy_timeout_ms: int = 5000
@@ -247,15 +294,30 @@ class Config:
         volume_models = {r.model for r in self.volume_ladder}
         synthesis_models = {r.model for r in self.synthesis_ladder}
 
-        # Section 7.2b -- the assertion the spec asks for by name.
-        if TRAP_MODEL in volume_models:
-            raise ValueError(
-                f"{TRAP_MODEL} is capped at 20 RPD despite its name. It belongs at the "
-                "bottom of the SYNTHESIS ladder. On the volume ladder it exhausts "
-                "silently and cascades failures into the agent path (spec 7.2b)."
-            )
-        if TRAP_MODEL not in synthesis_models:
-            raise ValueError(f"{TRAP_MODEL} must remain on the synthesis ladder.")
+        # The trap is that this model is NAMED like a volume model and capped at
+        # 20 RPD, not 500. The original guard forbade it on the volume ladder; that
+        # was a proxy for the real hazard, which is declaring it with volume-scale
+        # RPD and having it exhaust silently. The limiter now records the true number
+        # and steps down on exhaustion, so the placement is free but the FACT is not.
+        for rung in self.synthesis_ladder + self.volume_ladder:
+            if rung.model == TRAP_MODEL and rung.rpd > 20:
+                raise ValueError(
+                    f"{TRAP_MODEL} is declared with rpd={rung.rpd}. It is capped at "
+                    f"20 RPD despite being named like a volume model. Declaring it "
+                    f"higher makes it exhaust silently and cascade failures into the "
+                    f"agent path (spec 7.2b)."
+                )
+
+        # A local rung is unlimited, so nothing below it can ever be reached.
+        for name, ladder_rungs in (("synthesis", self.synthesis_ladder),
+                                   ("volume", self.volume_ladder)):
+            for i, rung in enumerate(ladder_rungs):
+                if rung.is_local and i != len(ladder_rungs) - 1:
+                    raise ValueError(
+                        f"local rung {rung.model} is at position {i + 1} of the "
+                        f"{name} ladder but is unlimited, so every rung below it is "
+                        f"unreachable. A local rung belongs last."
+                    )
         overlap = volume_models & synthesis_models
         if overlap:
             raise ValueError(

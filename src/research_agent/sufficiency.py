@@ -28,6 +28,7 @@ from sqlite3 import Connection
 from typing import Any, Callable, Sequence
 
 from . import db, prompts, rerank as rerank_mod, retrieve, router as router_mod
+from . import websearch
 from .config import Config
 from .retrieve import Hit
 
@@ -126,6 +127,14 @@ def _retrieve(conn: Connection, cfg: Config, models, query: str,
         # Never let a scope empty the candidate set: an empty slate cannot be
         # judged, only refused, and that would hide the reason.
         fused = scoped or fused
+
+    if cfg.web_enabled:
+        # APPENDED to the corpus candidates, never substituted for them, and then
+        # reranked together so a web snippet must out-score a corpus passage on the
+        # same scale to reach the context.
+        fused = fused + websearch.to_hits(
+            websearch.search(query, cfg, limit=cfg.web_results))
+
     return rerank_mod.rerank(reranker, query, fused, cfg)
 
 

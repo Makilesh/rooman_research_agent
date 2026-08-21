@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import sys
+import types
 import json
 from dataclasses import replace
 
 import pytest
 
 from research_agent import db
-from research_agent.config import TRAP_MODEL, Config, Rung
+from research_agent.config import (
+    TRAP_MODEL, UNLIMITED_RPD, UNLIMITED_RPM, UNLIMITED_TPM, Config, Rung,
+)
 from research_agent.llm import (
     DiskCache,
     GeminiProvider,
@@ -46,21 +50,31 @@ def _client(cfg, conn, clock, keys=None, gemini=None, ollama=None) -> LLMClient:
 # ---------------------------------------------------------------------------
 #  Ladder configuration
 # ---------------------------------------------------------------------------
-def test_trap_model_on_the_volume_ladder_fails_config_validation():
-    """gemini-2.5-flash-lite is named like a volume model and capped at 20 RPD.
+def test_the_trap_model_may_not_be_declared_with_volume_scale_rpd(cfg):
+    """gemini-2.5-flash-lite is NAMED like a volume model and capped at 20 RPD.
 
-    On the volume ladder it exhausts silently and cascades failures into the agent
-    path. The config must refuse to load if anyone moves it.
+    The guard originally forbade it on the volume ladder. That was a proxy for the
+    real hazard, which is declaring it with volume-scale RPD: it then exhausts
+    silently and cascades failures into the agent path. The limiter now records the
+    true number and steps down on exhaustion, so its placement is free -- the FACT is
+    not, and this is what is actually enforced.
     """
-    bad = Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=20),))
+    bad = Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=500),))
     with pytest.raises(ValueError, match="20 RPD"):
         bad.validate()
 
 
-def test_trap_model_must_remain_on_the_synthesis_ladder():
-    bad = Config(synthesis_ladder=(Rung("gemini-3.7-flash", 5, 20),))
-    with pytest.raises(ValueError, match="synthesis ladder"):
-        bad.validate()
+def test_the_trap_model_is_allowed_on_the_volume_ladder_at_its_true_rpd(cfg):
+    Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=20),)).validate()
+
+
+def test_a_local_rung_must_be_last(cfg):
+    """A local rung is unlimited, so anything below it is unreachable."""
+    local = Rung("qwen2.5:14b", rpm=UNLIMITED_RPM, rpd=UNLIMITED_RPD,
+                 tpm=UNLIMITED_TPM, provider="ollama")
+    with pytest.raises(ValueError, match="belongs last"):
+        Config(volume_ladder=(local, Rung("gemini-3.5-flash-lite", 15, 500))).validate()
+    Config(volume_ladder=(Rung("gemini-3.5-flash-lite", 15, 500), local)).validate()
 
 
 def test_a_model_may_not_sit_on_both_ladders():
@@ -197,19 +211,75 @@ def test_rpd_window_rolls_off_after_24h(cfg, conn, clock):
 
 
 def test_full_ladder_exhaustion_raises_a_named_error_not_a_stack_trace(cfg, conn, clock):
-    tiny = Config(
-        db_path=cfg.db_path, llm_cache_dir=cfg.llm_cache_dir,
+    """With the fallback off, a drained ladder raises a named error."""
+    tiny = replace(
+        cfg,
         synthesis_ladder=(Rung("only-model", rpm=1, rpd=1), Rung(TRAP_MODEL, rpm=1, rpd=1)),
+        synthesis_falls_back_to_volume=False,
     )
     client = _client(tiny, conn, clock, gemini=RecordingGemini())
-    client.complete("a", purpose="synthesise", ladder="synthesis", schema=SCHEMA, provider="gemini")
-    client.complete("b", purpose="synthesise", ladder="synthesis", schema=SCHEMA, provider="gemini")
+    for p in ("a", "b"):
+        client.complete(p, purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
 
     with pytest.raises(QuotaExhausted) as exc:
         client.complete("c", purpose="synthesise", ladder="synthesis",
                         schema=SCHEMA, provider="gemini")
     assert "synthesis ladder is exhausted" in str(exc.value)
     assert "Ollama path is unlimited" in str(exc.value)
+
+
+def test_exhausted_synthesis_falls_back_to_the_volume_ladder(cfg, conn, clock):
+    """Answer quality degrades last: a weaker cited answer beats no answer.
+
+    When every synthesis rung is drained the call is served by a volume model rather
+    than failing the turn.
+    """
+    tiny = replace(
+        cfg,
+        synthesis_ladder=(Rung("only-model", rpm=1, rpd=1), Rung(TRAP_MODEL, rpm=1, rpd=1)),
+        volume_ladder=(Rung("volume-model", rpm=99, rpd=99),),
+    )
+    gem = RecordingGemini()
+    client = _client(tiny, conn, clock, gemini=gem)
+    for p in ("a", "b"):
+        client.complete(p, purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
+
+    out = client.complete("c", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.model == "volume-model"
+    assert client.degraded_calls == 1
+
+    # The ledger must show the degradation rather than an unexplained volume-model
+    # synthesis appearing in the counts.
+    purposes = {r["purpose"] for r in
+                conn.execute("SELECT purpose FROM llm_calls").fetchall()}
+    assert "synthesise:degraded" in purposes
+
+
+def test_volume_never_falls_back_to_synthesis(cfg, conn, clock):
+    """The asymmetry is the whole point of splitting the ladders.
+
+    Judging and condensing on reasoning quota drains the answer budget in about four
+    turns, and the failure then lands on answer generation. Volume work fails instead.
+    """
+    tiny = replace(
+        cfg,
+        synthesis_ladder=(Rung("big-model", rpm=99, rpd=99), Rung(TRAP_MODEL, 10, 20)),
+        volume_ladder=(Rung("small-model", rpm=1, rpd=1),),
+    )
+    gem = RecordingGemini()
+    client = _client(tiny, conn, clock, gemini=gem)
+    client.complete("a", purpose="judge", ladder="volume", schema=SCHEMA,
+                    provider="gemini")
+
+    with pytest.raises(QuotaExhausted):
+        client.complete("b", purpose="judge", ladder="volume", schema=SCHEMA,
+                        provider="gemini")
+    assert all(m != "big-model" for m, _ in gem.calls), (
+        "volume work must never touch a synthesis model"
+    )
 
 
 def test_no_keys_configured_raises_quota_exhausted_not_an_auth_crash(cfg, conn, clock):
@@ -378,7 +448,56 @@ def test_offload_mode_selects_the_larger_local_model(cfg, conn, clock):
 # ---------------------------------------------------------------------------
 def test_missing_and_blank_keys_are_absent_not_errors(cfg):
     keys = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "abc", "GEMINI_API_KEY_2": "   "})
-    assert keys == {"key_1": "abc"}, "a blank key is not a key; the Ollama path needs none"
+    assert list(keys.values()) == ["abc"], (
+        "a blank key is not a key; the Ollama path needs none")
+
+
+def test_key_alias_follows_the_key_not_its_position(cfg):
+    """Quota is accounted per (model, key_alias). A positional alias hands a key's
+    consumption to whatever later occupies its slot -- observed live, where two fresh
+    keys inherited 20/20 and 18/20 RPD from their predecessors."""
+    first = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "AAA",
+                                      "GEMINI_API_KEY_2": "BBB"})
+    swapped = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "BBB",
+                                        "GEMINI_API_KEY_2": "AAA"})
+    assert set(first) == set(swapped), "moving a key between slots must not rename it"
+
+    replaced = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "AAA",
+                                         "GEMINI_API_KEY_2": "CCC"})
+    assert set(replaced) != set(first), "a genuinely new key must get a new identity"
+
+
+def test_key_alias_never_contains_the_key(cfg):
+    secret = "AQ.Ab8-super-secret-value"
+    alias = LLMClient.key_alias(secret)
+    assert secret not in alias
+    assert alias.startswith("k_") and len(alias) == 12
+
+
+def test_duplicate_keys_collapse_to_one_bucket(cfg):
+    """The same key in two slots shares one quota bucket; counting it twice would
+    double the apparent capacity."""
+    keys = LLMClient.load_keys(cfg, {"GEMINI_API_KEY_1": "same",
+                                     "GEMINI_API_KEY_2": "same"})
+    assert len(keys) == 1
+
+
+def test_a_rate_limited_key_rotates_rather_than_aborting(cfg, conn, clock):
+    """A 429 means the provider disagrees with the local ledger. Trust the provider
+    and rotate; aborting would waste the keys that still have capacity."""
+    def transport(model, prompt, schema, api_key, timeout_s):
+        if api_key == "spent":
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+        return json.dumps({"answer": "ok"}), 5, 5
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys={"k_spent": "spent", "k_fresh": "fresh"},
+                       gemini=GeminiProvider(transport=transport), now=clock)
+    out = client.complete("p", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.key_alias == "k_fresh"
+    assert "k_spent" not in client.disabled_keys, (
+        "rate limiting is temporary; the key must not be permanently disabled")
 
 
 def test_budget_reports_every_rung_and_reflects_consumption(cfg, conn, clock):
@@ -392,3 +511,206 @@ def test_budget_reports_every_rung_and_reflects_consumption(cfg, conn, clock):
     after = {(r["model"], r["key"]): r for r in client.budget()}[(top.model, "key_1")]
     assert after["rpd_used"] == 1
     assert after["rpd_left"] == top.rpd - 1
+
+
+# ---------------------------------------------------------------------------
+#  Permanently rejected keys
+# ---------------------------------------------------------------------------
+def test_a_permanently_rejected_key_is_skipped_not_fatal(cfg, conn, clock):
+    """Observed live: two of four real keys returned 403 PERMISSION_DENIED.
+
+    A 403 is not quota exhaustion -- waiting never fixes it. Re-raising would abort
+    the turn while working keys sat idle; retrying would loop forever. The key is
+    disabled for the process and rotation continues.
+    """
+    def transport(model, prompt, schema, api_key, timeout_s):
+        if api_key in {"dead1", "dead2"}:
+            raise RuntimeError("403 PERMISSION_DENIED. Your project has been "
+                               "denied access. Please contact support.")
+        return json.dumps({"answer": "from the working key"}), 5, 5
+
+    client = LLMClient(
+        cfg=cfg, conn=conn,
+        api_keys={"key_1": "dead1", "key_2": "dead2", "key_3": "alive"},
+        gemini=GeminiProvider(transport=transport), now=clock,
+    )
+    out = client.complete("p", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.key_alias == "key_3"
+    assert set(client.disabled_keys) == {"key_1", "key_2"}
+
+
+def test_a_disabled_key_is_not_retried_on_later_calls(cfg, conn, clock):
+    attempts: list[str] = []
+
+    def transport(model, prompt, schema, api_key, timeout_s):
+        attempts.append(api_key)
+        if api_key == "dead1":
+            raise RuntimeError("API_KEY_INVALID")
+        return json.dumps({"answer": "ok"}), 5, 5
+
+    client = LLMClient(cfg=cfg, conn=conn,
+                       api_keys={"key_1": "dead1", "key_2": "alive"},
+                       gemini=GeminiProvider(transport=transport), now=clock)
+    for i in range(3):
+        client.complete(f"p{i}", purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
+    assert attempts.count("dead1") == 1, "a dead key must be tried once, not every time"
+
+
+def test_quota_exhaustion_and_key_rejection_are_different(cfg, conn, clock):
+    """A saturated key recovers on its own; a rejected one never does. Conflating
+    them would either retry forever or give up while capacity remains."""
+    from research_agent.llm import is_permanent_key_error
+
+    assert is_permanent_key_error(RuntimeError("403 PERMISSION_DENIED"))
+    assert is_permanent_key_error(RuntimeError("API key not valid"))
+    assert not is_permanent_key_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+    assert not is_permanent_key_error(RuntimeError("503 Service Unavailable"))
+
+
+# ---------------------------------------------------------------------------
+#  Tokens per minute — the third published limit
+# ---------------------------------------------------------------------------
+def test_tpm_blocks_a_call_that_would_exceed_the_token_ceiling(cfg, conn, clock):
+    """RPM usually binds first, which is exactly why TPM is easy to forget.
+
+    Five requests a minute of 8k-token prompts is 40k against a 250k ceiling. It stops
+    being irrelevant the moment prompts grow or a 15 RPM volume model carries long
+    context.
+    """
+    tiny = replace(cfg, volume_ladder=(Rung("m", rpm=99, rpd=99, tpm=1000),),
+                   synthesis_falls_back_to_volume=False)
+    client = _client(tiny, conn, clock, gemini=RecordingGemini())
+
+    # A first call that reports 900 tokens spent.
+    row = client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha", "gemini",
+                                    "volume", tpm=1000, est_tokens=10)
+    client.ledger.finish(row, ok=True, latency_ms=1, prompt_tokens=800,
+                         completion_tokens=100)
+    assert client.ledger.tokens_used("m", "key_1") == 900
+
+    # A second call estimated at 200 tokens would exceed 1000 and is refused.
+    assert client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha2", "gemini",
+                                     "volume", tpm=1000, est_tokens=200) is None
+    # A small one still fits.
+    assert client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha3", "gemini",
+                                     "volume", tpm=1000, est_tokens=50) is not None
+
+
+def test_cached_calls_do_not_consume_tokens(cfg, conn, clock):
+    client = _client(cfg, conn, clock, gemini=RecordingGemini())
+    client.ledger.record_cached("gemini", "m", "key_1", "volume", "p", "sha")
+    assert client.ledger.tokens_used("m", "key_1") == 0
+
+
+def test_tpm_window_rolls_off(cfg, conn, clock):
+    client = _client(cfg, conn, clock, gemini=RecordingGemini())
+    row = client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha", "gemini",
+                                    "volume", tpm=1000, est_tokens=10)
+    client.ledger.finish(row, ok=True, latency_ms=1, prompt_tokens=900,
+                         completion_tokens=0)
+    assert client.ledger.tokens_used("m", "key_1") == 900
+    clock.advance(seconds=61)
+    assert client.ledger.tokens_used("m", "key_1") == 0
+
+
+def test_every_ladder_rung_declares_all_three_limits():
+    """A rung missing a limit is a rung the limiter cannot fully enforce."""
+    cfg = Config()
+    for name in ("synthesis", "volume"):
+        for rung in cfg.ladder(name):
+            assert rung.rpm > 0 and rung.rpd > 0 and rung.tpm > 0, rung.model
+
+
+def test_no_access_models_are_absent_from_both_ladders():
+    """Pro models are published at 0/0/0 on this tier. A rung the account cannot use
+    is not a fallback, it is a guaranteed failed attempt on the way down."""
+    from research_agent.config import NO_ACCESS_MODELS
+
+    cfg = Config()
+    listed = {r.model for name in ("synthesis", "volume") for r in cfg.ladder(name)}
+    assert not (listed & NO_ACCESS_MODELS)
+
+
+def test_drop_caches_clears_both_layers_not_just_the_semantic_one(cfg, conn):
+    """Regression: clearing only `answer_cache` left latency describing the cache.
+
+    An eval that emptied the semantic cache but left the prompt DiskCache in place
+    still served most LLM calls from disk at a recorded 0 ms, and the committed
+    transcripts reported `Latency: 0 ms` for turns that genuinely cost seconds.
+    Both layers have to go, or the numbers are about the cache's history.
+    """
+    from research_agent import evaluate
+    from research_agent.llm import DiskCache
+
+    disk = DiskCache(cfg.llm_cache_dir)
+    disk.put(DiskCache.key("m", "prompt-one", None), "answer one")
+    disk.put(DiskCache.key("m", "prompt-two", None), "answer two")
+    db.insert(conn, "answer_cache", {
+        "cache_id": "c1", "corpus_fingerprint": "fp",
+        "condensed_query": "q", "embedding": b"", "answer_json": "{}",
+    })
+    conn.commit()
+
+    n_answers, n_prompts = evaluate.drop_caches(cfg, conn)
+
+    assert (n_answers, n_prompts) == (1, 2)
+    assert conn.execute("SELECT COUNT(*) FROM answer_cache").fetchone()[0] == 0
+    assert disk.get(DiskCache.key("m", "prompt-one", None)) is None
+    assert disk.get(DiskCache.key("m", "prompt-two", None)) is None
+
+
+def test_drop_caches_is_safe_when_nothing_was_ever_cached(cfg, conn):
+    """A fresh checkout has no `.cache/llm` directory at all."""
+    from research_agent import evaluate
+
+    assert not cfg.llm_cache_dir.exists()
+    assert evaluate.drop_caches(cfg, conn) == (0, 0)
+
+
+def test_gemini_client_is_built_with_a_request_timeout(monkeypatch):
+    """Regression: `timeout_s` was accepted and dropped on the Gemini path.
+
+    The Ollama path passed it to httpx; this one built a client with the SDK's
+    default of no timeout at all. One hung request then blocked the process
+    indefinitely and took the fallback ladder with it -- the ledger held a
+    `synthesise` row with ok=NULL that never resolved and no walk to the local
+    floor. A rung you can never time out of is not a rung.
+    """
+    from research_agent import llm as llm_mod
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, api_key, http_options=None):
+            captured["http_options"] = http_options
+
+    fake_types = types.SimpleNamespace(HttpOptions=lambda timeout: {"timeout": timeout})
+    fake_genai = types.SimpleNamespace(Client=_FakeClient, types=fake_types)
+    monkeypatch.setitem(sys.modules, "google", types.SimpleNamespace(genai=fake_genai))
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    provider = llm_mod.GeminiProvider()
+    provider._client("k", timeout_s=45.0)
+
+    assert captured["http_options"] == {"timeout": 45_000}, (
+        "HttpOptions.timeout is milliseconds and must carry cfg.gemini_timeout_s"
+    )
+
+
+@pytest.mark.parametrize("message", [
+    "ReadTimeout",
+    "Request timed out",
+    "504 deadline exceeded",
+])
+def test_a_timed_out_request_is_transient_so_the_ladder_walks_on(message):
+    """A timeout must not be mistaken for a bad key or an exhausted quota."""
+    from research_agent.llm import (
+        is_permanent_key_error, is_rate_limited, is_transient_error,
+    )
+
+    assert is_transient_error(message)
+    assert not is_rate_limited(message)
+    assert not is_permanent_key_error(message)

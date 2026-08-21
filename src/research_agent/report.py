@@ -273,7 +273,8 @@ def render_answer_markdown(answer) -> str:
     lines += [
         "---", "",
         f"- Provider: `{answer.provider}` · model: `{answer.model}`",
-        f"- Latency: {answer.latency_ms} ms",
+        f"- Latency: {answer.latency_ms} ms"
+        + (" *(cache hit — not a synthesis timing)*" if answer.cached else ""),
         f"- Passages in context: {len(answer.hits)}",
     ]
     if answer.top_rerank_score is not None:
@@ -287,8 +288,40 @@ def render_answer_markdown(answer) -> str:
     return "\n".join(lines) + "\n"
 
 
-def answer_to_dict(answer) -> dict:
-    """The machine-checkable form. This is the citation contract as data."""
+# How much of a cited passage the committed artifact carries. Enough for a reviewer
+# to check the citation by eye; far short of republishing the passage.
+CITED_EXCERPT_CHARS = 600
+
+
+def answer_to_dict(answer, full: bool = True) -> dict:
+    """The machine-checkable form. This is the citation contract as data.
+
+    `full=True` keeps every retrieved passage in its entirety, which the semantic
+    answer cache needs to reconstruct a renderable answer. `full=False` produces the
+    committed artifact: only the passages actually cited, each truncated to an
+    excerpt.
+
+    The distinction is not about file size. The corpus PDFs are deliberately not
+    committed (D-006) so the repository does not redistribute anyone's paper -- and
+    the first version of this function then embedded ~20,000 characters of verbatim
+    paper text into every answer JSON, 8,000 of it from passages that were never
+    cited. That quietly reintroduced exactly what D-006 avoided.
+    """
+    cited = answer.cited_chunk_ids
+    sources = answer.hits if full else [h for h in answer.hits if h.chunk_id in cited]
+
+    def source(h):
+        row = {"chunk_id": h.chunk_id, "doc_id": h.doc_id, "title": h.title,
+               "page_start": h.page_start, "page_end": h.page_end,
+               "section": h.section, "rerank_score": h.rerank_score,
+               "cited": h.chunk_id in cited}
+        if full:
+            row["text"] = h.text
+        else:
+            excerpt = " ".join(h.text.split())[:CITED_EXCERPT_CHARS]
+            row["excerpt"] = excerpt + ("..." if len(h.text) > CITED_EXCERPT_CHARS else "")
+        return row
+
     return {
         "question": answer.question,
         "insufficient_evidence": answer.insufficient_evidence,
@@ -298,16 +331,12 @@ def answer_to_dict(answer) -> dict:
              "verify_scores": s.verify_scores, "status": s.status}
             for s in answer.sentences
         ],
-        "sources": [
-            {"chunk_id": h.chunk_id, "doc_id": h.doc_id, "title": h.title,
-             "page_start": h.page_start, "page_end": h.page_end,
-             "section": h.section, "rerank_score": h.rerank_score,
-             "text": h.text}
-            for h in answer.hits
-        ],
+        "sources": [source(h) for h in sources],
+        "n_retrieved": len(answer.hits),
         "provider": answer.provider,
         "model": answer.model,
         "latency_ms": answer.latency_ms,
+        "cached": answer.cached,
         "turn_id": answer.turn_id,
     }
 
@@ -321,8 +350,9 @@ def write_answer(cfg, answer, item_id: str):
     md = out / f"{item_id}.md"
     js = out / f"{item_id}.json"
     md.write_text(render_answer_markdown(answer), encoding="utf-8")
-    js.write_text(_json.dumps(answer_to_dict(answer), indent=2, ensure_ascii=False),
-                  encoding="utf-8")
+    js.write_text(
+        _json.dumps(answer_to_dict(answer, full=False), indent=2, ensure_ascii=False),
+        encoding="utf-8")
     return md, js
 
 
@@ -343,7 +373,9 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("")
     add(f"- Corpus fingerprint: `{labels.fingerprint_at_labelling}` · 11 papers")
     add(f"- Embedding: `{cfg.embed_model}` · Reranker: `{cfg.rerank_model}`")
-    add(f"- Generation: `{cfg.ollama_model}` via Ollama")
+    _prov = getattr(gen, "provider", "") or "unknown"
+    _model = getattr(gen, "model", "") or "unknown"
+    add(f"- Generation: `{_model}` via {_prov}")
     add(f"- Thresholds: tau_low {cfg.tau_low} · tau_high {cfg.tau_high} "
         f"· tau_verify {cfg.tau_verify}")
     add("")
@@ -441,8 +473,13 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
         add("")
         add("| Scenario | turn | expected | actual |")
         add("|---|---:|---|---|")
+        from .evaluate import _route_ok
+
         for sid, i, exp, act in convo["rows"]:
-            mark = "" if exp == act else "  <-"
+            # Use the same equivalence the metric uses. Marking refuse-vs-abstain as
+            # a mismatch in the table while counting it correct in the number makes
+            # the two disagree, and a reader will trust the table.
+            mark = "" if _route_ok(exp, act) else "  <-"
             add(f"| {sid} | {i} | {exp} | {act}{mark} |")
         add("")
 
@@ -516,7 +553,9 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("| Corpus statistics | `research-agent ingest` / `index` output | no |")
     add("| Sample answers | `outputs/answers/*.md` | yes |")
     add("| Conversation transcripts | `outputs/conversations/*.md` | yes |")
-    add("| Gemini results | **TBD -- no Gemini call has been made** | yes |")
+    add(f"| Provider that produced sections 2-3 | `{_prov}` / `{_model}` | yes |")
+    add("| Cross-provider comparison | run `eval` once per provider; each writes "
+        "its own `eval_report.{provider}.md` | yes |")
     add("")
 
     add("## 7 · Reproducing")
@@ -530,7 +569,61 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("")
     add("No API key is required for any of it.")
 
-    path = cfg.outputs_dir / "eval_report.md"
+    # Same rule as the transcripts: the unsuffixed name belongs to the Ollama path,
+    # the only one a reviewer can reproduce without a key. A Gemini run used to
+    # overwrite it while the header still read "via Ollama".
+    name = "eval_report.md" if _prov == "ollama" else f"eval_report.{_prov}.md"
+    path = cfg.outputs_dir / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def write_turn(cfg, turn, item_id: str):
+    """Write the artifact for ANY outcome, including a refusal or a clarification.
+
+    A refusal decided by the router never produces an `Answer` object, so an earlier
+    version wrote nothing at all for it -- four of the twelve deliverables were
+    silently missing, and those four are the abstention evidence, which is the part
+    of the brief most submissions skip. An honest refusal is a result, not the
+    absence of one.
+    """
+    import json as _json
+
+    if turn.answer is not None:
+        return write_answer(cfg, turn.answer, item_id)
+
+    out = cfg.outputs_dir / "answers"
+    out.mkdir(parents=True, exist_ok=True)
+    md, js = out / f"{item_id}.md", out / f"{item_id}.json"
+
+    is_clarify = bool(turn.clarification)
+    lines = [f"# {turn.raw_text}", ""]
+    if is_clarify:
+        lines += ["**The question is ambiguous, so the agent asked rather than "
+                  "guessing.**", "", f"> {turn.clarification}", ""]
+    else:
+        lines += ["**The sources do not contain an answer to this question.**", "",
+                  turn.route.reason, "",
+                  "_No citations are given, because there is nothing in the corpus "
+                  "to cite. This is the intended behaviour, not a failure._", ""]
+    lines += ["---", "",
+              f"- Route: `{turn.decision}`",
+              f"- Top rerank score: {turn.route.top_score:.4f}",
+              f"- Retrieval loops: {turn.n_loops}",
+              f"- Latency: {turn.latency_ms} ms",
+              ""]
+    md.write_text("\n".join(lines), encoding="utf-8")
+
+    js.write_text(_json.dumps({
+        "question": turn.raw_text,
+        "route": turn.decision,
+        "insufficient_evidence": not is_clarify,
+        "clarification": turn.clarification,
+        "reason": turn.route.reason,
+        "top_rerank_score": turn.route.top_score,
+        "sentences": [],
+        "sources": [],
+        "n_retrieval_loops": turn.n_loops,
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    return md, js

@@ -139,15 +139,65 @@ def doctor(
         t.add_column("#", justify="right")
         t.add_column("model")
         t.add_column("RPM", justify="right")
+        t.add_column("TPM", justify="right")
         t.add_column("RPD", justify="right")
         t.add_column("note")
         for i, rung in enumerate(cfg.ladder(name), 1):  # type: ignore[arg-type]
             note = ""
             if rung.model == "gemini-2.5-flash-lite":
                 note = "named like a volume model, capped at 20 RPD"
-            t.add_row(str(i), rung.model, str(rung.rpm), str(rung.rpd), note)
+            if rung.is_local:
+                # Sentinels are an implementation detail; printing 1000000000 three
+                # times says nothing a reader wants to know.
+                t.add_row(str(i), rung.model, "-", "-", "-",
+                          "local floor — unlimited, needs no key")
+            else:
+                t.add_row(str(i), rung.model, str(rung.rpm), f"{rung.tpm:,}",
+                          str(rung.rpd), note)
         console.print(t)
+    local_rungs = [r for name in ("synthesis", "volume")
+                   for r in cfg.ladder(name) if r.is_local]  # type: ignore[arg-type]
+    for rung in local_rungs:
+        try:
+            names = [m.get("name") for m in provider.tags(timeout_s=5.0)]
+            if rung.model in names:
+                _ok(f"local floor `{rung.model}` is reachable",
+                    "the ladder cannot run out of quota while Ollama is up")
+            else:
+                _fail(f"local floor `{rung.model}` is not pulled",
+                      f"run: ollama pull {rung.model}")
+                failures += 1
+        except Exception:
+            _warn(f"local floor `{rung.model}` unavailable — Ollama is not running",
+                  "Ollama does not auto-start on Windows; run `ollama serve`. "
+                  "Without it the ladder can exhaust.")
+
+    if cfg.synthesis_falls_back_to_volume:
+        _ok("synthesis falls back to the volume ladder when drained",
+            "one-directional: volume work never escalates to synthesis models")
     _ok("ladder placement validated", "Config.validate() enforces the 2.5-flash-lite rule")
+
+    if keys:
+        # ListModels is free. A stale ladder entry otherwise reveals itself only when
+        # real quota is being spent, which is the worst possible moment.
+        try:
+            probe = LLMClient(cfg=cfg, conn=conn, api_keys=keys)
+            live = probe.live_models()
+            # Local rungs are not Gemini models; ListModels knows nothing of them.
+            missing = [r.model for name in ("synthesis", "volume")
+                       for r in cfg.ladder(name)
+                       if not r.is_local and r.model not in live]
+            if missing:
+                _fail(f"{len(missing)} ladder model(s) do not exist on this API",
+                      ", ".join(missing))
+                failures += 1
+            else:
+                n_remote = sum(1 for name in ("synthesis", "volume")
+                               for r in cfg.ladder(name) if not r.is_local)
+                _ok(f"all {n_remote} Gemini ladder models exist",
+                    f"checked against {len(live)} live models")
+        except Exception as exc:
+            _warn("could not verify ladder models", f"{type(exc).__name__}: {exc}")
 
     # -- GPU ---------------------------------------------------------------
     if gpu:
@@ -223,13 +273,26 @@ def budget() -> None:
     )
 
     t = Table(show_edge=False)
-    for col in ("ladder", "model", "key", "RPM", "RPD"):
-        t.add_column(col, justify="right" if col in ("RPM", "RPD") else "left")
+    for col in ("ladder", "model", "key", "RPM", "TPM", "RPD"):
+        t.add_column(col, justify="right" if col in ("RPM", "TPM", "RPD") else "left")
     for row in client.budget():
-        rpm = f"{row['rpm_left']}/{row['rpm_limit']}"
-        rpd = f"{row['rpd_left']}/{row['rpd_limit']}"
-        t.add_row(row["ladder"], row["model"], row["key"], rpm, rpd)
+        t.add_row(row["ladder"], row["model"], row["key"][:12],
+                  f"{row['rpm_left']}/{row['rpm_limit']}",
+                  f"{row['tpm_left']:,}/{row['tpm_limit']:,}",
+                  f"{row['rpd_left']}/{row['rpd_limit']}")
     console.print(t)
+
+    syn = sum(r.rpd for r in cfg.synthesis_ladder) * max(len(client.api_keys), 1)
+    vol = sum(r.rpd for r in cfg.volume_ladder) * max(len(client.api_keys), 1)
+    console.print()
+    console.print(f"Daily ceiling across {len(client.api_keys) or 0} key(s): "
+                  f"[bold]{syn}[/bold] synthesis + [bold]{vol}[/bold] volume calls.")
+    degraded = db.scalar(
+        conn, "SELECT COUNT(*) FROM llm_calls WHERE purpose LIKE '%:degraded'") or 0
+    if degraded:
+        _warn(f"{degraded} synthesis call(s) were served by a volume model",
+              "the synthesis ladder was drained; answers were still produced, at "
+              "lower quality")
 
     if not client.api_keys:
         console.print(
@@ -518,8 +581,8 @@ def _answer_once(cfg: Config, question: str, provider: str | None,
             console.print(report.render_answer_markdown(result.answer),
                           markup=False, highlight=False)
 
-    if save and result.answer is not None:
-        md, js = report.write_answer(cfg, result.answer, save)
+    if save:
+        md, js = report.write_turn(cfg, result, save)
         if not quiet:
             _ok(f'wrote {md.relative_to(cfg.repo_root)} and {js.name}')
     return result
@@ -538,9 +601,17 @@ def ask(
         False, "--show-retrieval", help="Also print the retrieval tables."
     ),
     trace: bool = typer.Option(False, "--trace", help="Print the agent loop trace."),
+    web: bool = typer.Option(
+        False, "--web",
+        help="Also search the web. Supplementary to the corpus, never a replacement."),
 ) -> None:
     """Ask a question and get a cited answer, or an explicit refusal."""
     cfg = Config.load()
+    if web:
+        cfg = replace(cfg, web_enabled=True)
+        _warn("web search enabled",
+              "results are supplementary; citations mark them [web] and the "
+              "headline evaluation numbers remain corpus-only")
     if not retrieve_only:
         _answer_once(cfg, question, provider, save, show_retrieval, trace=trace)
         return
@@ -827,8 +898,10 @@ def answer_all(
 
     # Same reason as chat-eval: a cache that persists between runs makes the run
     # measure its own history rather than the pipeline (decisions.md D-125).
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    # Both layers, not just the semantic one -- see evaluate.drop_caches.
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
 
     wanted = set(only.split(",")) if only else None
     items = [i for i in label_set.items if not wanted or i.id in wanted]
@@ -1031,11 +1104,12 @@ def chat_eval(
     client = LLMClient(cfg=cfg, conn=conn,
                        api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
 
-    # The semantic answer cache accumulates across runs and short-circuits turns,
-    # which makes two eval runs incomparable. Evaluation starts from an empty one so
-    # the numbers describe the pipeline rather than the cache's history.
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    # Both caches accumulate across runs and short-circuit work, which makes two
+    # eval runs incomparable. Evaluation starts from empty ones so the numbers
+    # describe the pipeline rather than the cache's history.
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
 
     spec = yaml.safe_load(cfg.conversations_path.read_text(encoding="utf-8"))
     wanted = set(only.split(",")) if only else None
@@ -1070,11 +1144,22 @@ def chat_eval(
             rows.append({
                 "scenario": scenario["id"], "turn": i,
                 "expected": expected, "actual": actual,
-                "match": expected == actual,
+                "match": evaluate.route_ok(expected, actual),
                 "drifted": result.condensed.drifted,
                 "novel": sorted(result.condensed.novel_words),
                 "missing": missing, "leaked": leaked,
                 "refs": result.resolved_refs,
+                # The rewrite itself. Drift rate says whether a rewrite invented a
+                # word; it says nothing about whether the rewrite is a good query.
+                # Those are different properties, and only the text shows the second.
+                "raw": raw,
+                "condensed": result.condensed.query,
+                "final_query": result.final_query,
+                "loops": result.n_loops,
+                "used_llm": result.condensed.used_llm,
+                "reason": result.condensed.reason,
+                "top_score": round(result.route.top_score, 4),
+                "route_reason": result.route.reason,
             })
 
             lines += [f"## Turn {i}", "", f"**User:** {raw}", ""]
@@ -1098,8 +1183,16 @@ def chat_eval(
 
     out_dir = cfg.outputs_dir / "conversations"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The plain `{sid}.md` name belongs to the Ollama path and no other. Both
+    # providers used to write it, so whichever ran last owned the committed
+    # transcript -- a Gemini run silently replaced the showcase scenario with its
+    # own worse one, and the deliverable a reviewer opens showed four refusals on
+    # a scenario the default path answers at every turn. The default path is also
+    # the only one reproducible without a key, so it keeps the unsuffixed name.
+    tag = (provider or cfg.provider)
     for sid, lines in transcripts.items():
-        (out_dir / f"{sid}.md").write_text("\n".join(lines), encoding="utf-8")
+        name = f"{sid}.md" if tag == "ollama" else f"{sid}.{tag}.md"
+        (out_dir / name).write_text("\n".join(lines), encoding="utf-8")
 
     t = Table(show_edge=False)
     for c in ("scenario", "turn", "expected", "actual", "drift", "condensation"):
@@ -1125,6 +1218,15 @@ def chat_eval(
                   f"  (target 0)")
     console.print(f"  transcripts               outputs/conversations/ "
                   f"({len(transcripts)} files)")
+
+    # A machine-diffable record of every rewrite, keyed by scenario+turn, so two
+    # providers can be compared on identical history rather than by eye.
+    import json as _json
+
+    path = out_dir / f"_condensation.{tag}.json"
+    path.write_text(_json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    _ok(f"wrote {path.relative_to(cfg.repo_root)}",
+        "condensed queries, per turn, for cross-provider diffing")
 
 
 @app.command("eval")
@@ -1168,8 +1270,9 @@ def eval_cmd(
 
     # ---- generation metrics ---------------------------------------------
     console.rule("[bold]2 · Generation metrics (LLM-dependent)")
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
     models = _load_models(cfg)
     client = LLMClient(cfg=cfg, conn=conn,
                        api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
@@ -1188,6 +1291,8 @@ def eval_cmd(
             continue
 
         ans = turn.answer
+        if ans is not None and not gen.provider:
+            gen.provider, gen.model = ans.provider, ans.model
         gen.n_items += 1
         gen.schema_valid += 1
         gen.latencies.append(turn.latency_ms)
@@ -1248,7 +1353,7 @@ def eval_cmd(
                 rows.append((scenario["id"], i, t.get("expected_route"), turn.decision))
         convo = {
             "turns": len(rows), "drifted": drifted,
-            "route_correct": sum(1 for _, _, e, a in rows if evaluate._route_ok(e, a)),
+            "route_correct": sum(1 for _, _, e, a in rows if evaluate.route_ok(e, a)),
             "coref_ok": coref_ok, "coref_total": coref_total,
             "rows": rows,
         }
@@ -1279,6 +1384,94 @@ def eval_cmd(
     console.print(f"  LLM calls / cache hit rate           "
                   f"{ledger['total']} / {ledger['cache_hit_rate']:.1%}")
     _ok(f"wrote {path.relative_to(cfg.repo_root)}")
+
+
+@app.command()
+def ui(
+    port: int = typer.Option(8501, "--port", help="Port to serve on."),
+) -> None:
+    """Launch the Streamlit chat UI (optional; needs requirements-ui.txt)."""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        _fail("Streamlit is not installed",
+              "it is an optional extension: pip install -r requirements-ui.txt")
+        raise typer.Exit(1)
+
+    target = _Path(__file__).with_name("ui.py")
+    console.print(f"Serving the chat UI on http://localhost:{port}")
+    # Streamlit must own the process; it re-runs the script on every interaction.
+    subprocess.run([_sys.executable, "-m", "streamlit", "run", str(target),
+                    "--server.port", str(port),
+                    "--server.headless", "true"], check=False)
+
+
+@app.command("condensation-diff")
+def condensation_diff(
+    left: str = typer.Option("ollama", "--left", help="First provider tag."),
+    right: str = typer.Option("gemini", "--right", help="Second provider tag."),
+) -> None:
+    """Diff two providers' query rewrites on identical conversation history.
+
+    Drift rate answers "did the rewrite invent a word". It cannot answer "is the
+    rewrite a good query", and a clean drift rate is not evidence for both. This
+    prints the rewrites side by side so the second question has an answer too.
+    """
+    import json as _json
+
+    cfg = Config.load()
+    out_dir = cfg.outputs_dir / "conversations"
+    paths = {tag: out_dir / f"_condensation.{tag}.json" for tag in (left, right)}
+    for tag, path in paths.items():
+        if not path.exists():
+            _fail(f"no record for {tag}", f"run: research-agent chat-eval --provider {tag}")
+            raise typer.Exit(1)
+
+    data = {tag: {(r["scenario"], r["turn"]): r
+                  for r in _json.loads(p.read_text(encoding="utf-8"))}
+            for tag, p in paths.items()}
+    keys = sorted(set(data[left]) | set(data[right]))
+
+    diverged = 0
+    for key in keys:
+        a, b = data[left].get(key), data[right].get(key)
+        if a is None or b is None:
+            continue
+        same_route = a["actual"] == b["actual"]
+        same_text = a["condensed"].strip().lower() == b["condensed"].strip().lower()
+        if same_route and same_text:
+            continue
+        diverged += 1
+        console.rule(f"[bold cyan]{key[0]} · turn {key[1]}")
+        console.print(f"[dim]user:[/dim] {a['raw']}", markup=False)
+        if not a["used_llm"]:
+            console.print(f"[dim]  (condensation skipped — {a['reason']})[/dim]")
+        for tag, row in ((left, a), (right, b)):
+            mark = "" if row["actual"] == row["expected"] else "  <-- MISMATCH"
+            console.print(f"\n  [bold]{tag}[/bold]  route={row['actual']}"
+                          f" (expected {row['expected']}) top={row['top_score']}{mark}")
+            console.print(f"    condensed : {row['condensed']}", markup=False)
+            final = row.get("final_query", "")
+            if final and final.strip().lower() != row["condensed"].strip().lower():
+                console.print(f"    [yellow]loop rewrote to[/yellow] "
+                              f"({row.get('loops', 0)} loop(s)): {final}", markup=False)
+            if row["drifted"]:
+                console.print(f"    [red]drift:[/red] {row['novel']}")
+        console.print()
+
+    console.rule()
+    for tag in (left, right):
+        rows = list(data[tag].values())
+        correct = sum(1 for r in rows if r["match"])
+        drift = sum(1 for r in rows if r["drifted"])
+        console.print(f"  {tag:<8} route {correct}/{len(rows)} · drift {drift}/{len(rows)}")
+    console.print(f"\n  {diverged}/{len(keys)} turns differ in rewrite or route.")
+    console.print("[dim]  Identical drift rates with different routes means the guard "
+                  "passed both, and only one rewrite was a usable query.[/dim]")
 
 
 @app.command("db")

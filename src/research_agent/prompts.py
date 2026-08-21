@@ -28,9 +28,15 @@ ANSWER_SCHEMA: dict = {
             "type": "boolean",
             "description": "True if the sources do not contain the answer.",
         },
+        # NOT a union type. Ollama accepts `["string", "null"]`; Gemini's
+        # response_schema rejects it outright -- its type enum admits one value, so
+        # the SDK fails validation before a request is even sent. A schema that
+        # constrains only one of the two providers is not a contract, so the
+        # portable form is used and the empty string carries the "no refusal" case.
         "refusal_reason": {
-            "type": ["string", "null"],
-            "description": "If insufficient_evidence, why the sources fall short.",
+            "type": "string",
+            "description": ("Why the sources fall short, when insufficient_evidence "
+                            "is true. Empty string otherwise."),
         },
         "sentences": {
             "type": "array",

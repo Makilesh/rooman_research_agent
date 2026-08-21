@@ -1749,3 +1749,846 @@ did not reproduce. `q11` remains the single route failure, diagnosed at Step 6 a
 retrieval problem (0.00 Recall@5 on every configuration) rather than a synthesis one.
 **README line:** "Every generation number is reproducible: two runs with the cache
 cleared produce identical reports."
+
+---
+
+## D-138 · What is committed, and what is not
+**Date:** 2026-08-20
+**Decision:** `outputs/` is committed in full — 12 answers as `.md` + `.json`, 4
+conversation transcripts, `eval_report.md`. Everything rebuildable is ignored:
+`storage/`, `*.npy`, `.cache/`, `data/sources/*.pdf`, `.venv/`.
+**Why commit outputs:** if a reviewer cannot run Ollama, or skips setup entirely, the
+results are still on the page and still scoreable. That is worth more than the ~90 KB
+it costs.
+
+**A problem found while auditing this, and it was not a size problem.** The corpus
+PDFs are deliberately not committed (D-006) so the repository does not redistribute
+anyone's paper. The answer JSONs then embedded **20,679 characters of verbatim paper
+text each** — 8,000 of it from passages that were never even cited — because
+`answer_to_dict` was serving two callers with one shape: the semantic cache, which
+genuinely needs full passage text to reconstruct an answer, and the committed
+artifact, which does not. That quietly reintroduced exactly what D-006 avoids.
+**Fix:** the committed JSON carries only **cited** passages, each truncated to a
+600-character excerpt — enough to check a citation by eye, far short of republishing
+the passage. The cache keeps full text, in the database, which is gitignored.
+`outputs/answers/` went from 311 KB to 63 KB.
+
+**Two further gitignore findings:** a stray `*m/` pattern would have ignored any
+directory whose name ends in "m", and the private working notes were listed only by
+directory. Both fixed; the private files are now listed by name as well, so they stay
+ignored if they are ever moved back to the root.
+**README line:** "Results are committed so they are readable without running
+anything, but the answer files carry only cited excerpts — committing full passage
+text would re-introduce the redistribution question that not committing the PDFs
+avoids."
+
+---
+
+## D-139 · Refusals are deliverables too
+**Date:** 2026-08-20
+**Context:** Four of the twelve `outputs/answers/` files were missing.
+**Cause:** a refusal decided by the router never produces an `Answer` object, and the
+writer was guarded on `if result.answer is not None`. So nothing was written for
+exactly the four questions that demonstrate abstention — the capability the brief
+singles out and that most submissions skip.
+**Decision:** `report.write_turn` writes an artifact for every outcome: answer,
+refusal, or clarification, each with its route, top rerank score and loop count.
+**Why it matters beyond completeness:** an honest refusal is a *result*, not the
+absence of one. A reviewer looking for evidence of abstention should find it as a
+file, not have to infer it from a gap in the directory listing.
+**Evidence:** `outputs/answers/` now holds 12 `.md` + 12 `.json`.
+**README line:** "Refusals are written out like any other answer, because an honest
+refusal is a result rather than the absence of one."
+
+---
+
+## D-140 · The clean-clone test, and the two README numbers it falsified
+**Date:** 2026-08-20
+**Method:** copied the repository to a fresh directory excluding every gitignored
+path, made a new venv, and followed the README quickstart literally.
+**Result: it passes end to end.** Install clean, `doctor --gpu` green, 11/11 papers
+fetched with **sha256 values identical to the original run**, ingest and index
+reproducing **fingerprint `e62c6925a03ad297` exactly**, and a cited answer out the
+far end.
+
+**It also caught two things the README claimed and could not support:**
+
+1. **"Subsequent runs answer in about 15 seconds" was wrong.** Measured: a single
+   `research-agent ask` takes **~45 seconds wall-clock**, of which ~30 s is process
+   start plus loading bge-m3 and the reranker. The 14.6 s p50 in the evaluation is
+   *in-process turn latency*, measured inside a loop where the encoders load once and
+   serve every question. Both numbers are true; only one of them is what a single
+   command costs, and the README was quoting the wrong one.
+2. **Windows MAX_PATH.** Installing torch into a deeply-nested directory fails with
+   `OSError: No such file or directory` on
+   `predicated_tile_access_iterator_residual_last.h` — a header nested past 260
+   characters. Reproduced at a 100-character clone path, clean at 36. Added to
+   troubleshooting with both fixes.
+
+The quickstart also used a shortened question whose answer is noticeably worse than
+the one showcased at the top of the README; it now uses the same question, so a
+reviewer sees what was advertised.
+**README line:** "The quickstart was tested by following it literally in a clean
+clone, which is how two of its own numbers turned out to be wrong."
+
+---
+
+## D-141 · Streamlit UI: two bugs that only appear when you actually run it
+**Date:** 2026-08-20
+**Decision:** `ui.py` imports `agent.run_turn` and renders the result. No business
+logic. Streamlit is in a separate `requirements-ui.txt` so the quickstart does not
+pull its dependency tree, and `research-agent ui` fails with a useful message if it
+is absent.
+
+**Two failures that static review would not have found, and that an HTTP 200 did not
+either — the first response was Streamlit's own error page:**
+
+1. **`ImportError: attempted relative import with no known parent package`.**
+   Streamlit executes the file as a top-level script rather than importing it as part
+   of the package, so `from . import agent` fails. Absolute imports work either way
+   because the package is installed.
+2. **`SQLite objects created in a thread can only be used in that same thread`.**
+   Streamlit serves each script re-run from a worker thread, and the connection was
+   cached across them by `@st.cache_resource`.
+   **Fixed inside the UI layer, not the core.** Encoders stay cached — they cost ~30
+   seconds — while the connection is opened per run. SQLite connections are cheap and
+   WAL already supports concurrent readers, so this is the correct pattern rather
+   than a workaround. Adding `check_same_thread=False` to `db.connect` would have
+   made the whole CLI carry a concession that only a server needs, and Step 14 is
+   explicit that the UI must not require core changes.
+
+**A third bug was mine, in the rendering.** Groundedness is scored per *(sentence,
+chunk)* pair, and the sources panel collapsed them to one score per chunk — so a
+passage supporting three sentences displayed only the last one's score. The visible
+symptom was a sentence marked `[unverified]` sitting directly above a source labelled
+"groundedness 1.000". It now shows the range across sentences.
+**Evidence:** driven in a real browser; a question answered end to end with cited,
+expandable sources and a "How this turn was decided" trace.
+**README line:** "The UI imports the agent and renders it — the two bugs it hit were
+both about Streamlit's execution model, and neither required a change to the core."
+
+---
+
+## D-142 · Web search: supplementary, same pipeline, default off
+**Date:** 2026-08-20
+**Decision:** `--web` appends web results to the corpus candidate pool. They are
+reranked, cited and groundedness-verified through the identical path, and render as
+`[web] Title — url` with a `web_` id prefix.
+**Four rules, each enforced rather than intended:**
+- **Supplementary, never a replacement.** Corpus candidates are always retrieved and
+  web results are appended; a test asserts no corpus candidate is displaced.
+- **Same pipeline.** Web results are adapted into the same `Hit` type. A separate
+  `WebHit` would have let web text take a different path through reranking and
+  verification, and taking the identical path is the entire point.
+- **Visibly distinguishable.** The `[web]` marker comes first, and `page_start` is 0
+  rather than an invented page number — a web page has no page, and putting a false
+  precision into a citation is exactly the kind of small lie this project exists to
+  prevent.
+- **Abstention must not regress.** Measured with the flag off: **4/4 controls abstain,
+  with identical routes to the pre-Phase-8 baseline.** A test also asserts the
+  corpus-only path makes no network call at all.
+**Provider:** DuckDuckGo's HTML endpoint — no API key, no account, no quota to
+account for. A second credential in the quickstart would undermine the project's
+"works with no key at all" property for the sake of an optional extension.
+**Consequence:** snippets are short, so a web citation carries less context than a
+corpus passage. A search outage returns an empty list and degrades to corpus-only
+rather than failing the turn.
+**The headline numbers stay corpus-only**, so the evaluation stays honest.
+**README line:** "Web search is supplementary, off by default, and goes through the
+same chunk-cite-verify path as the corpus — with the flag off, the control questions
+abstain identically and no network call is made."
+
+---
+
+## D-143 · Two of four real keys were permanently denied — rotation had to learn a third failure class
+**Date:** 2026-08-20
+**Observed on the first real Gemini call:** `403 PERMISSION_DENIED. Your project has
+been denied access.` Probing each key individually: **key_1 and key_2 denied, key_3
+and key_4 working.** `ListModels` succeeded on all four — metadata access and
+generation access are separate permissions, so a key can look healthy and be unable
+to generate.
+**The gap this exposed:** the limiter knew two failure classes, quota-exhausted and
+everything-else. A 403 is neither. Re-raising aborted the turn while two working keys
+sat idle; retrying would have looped forever on a condition no amount of waiting
+fixes.
+**Decision:** a third class. `KeyRejected` marks a key permanently unusable for the
+process, rotation skips it, and the turn continues on the next key. Not persisted —
+a key restored on the provider's side should work again next run without an edit.
+**Consequence:** the full evaluation ran to completion on two keys while two were
+dead, which is exactly what multi-key rotation is supposed to buy and would not have
+worked an hour earlier.
+**Evidence:** `disabled_keys` after the first call: `{key_1: 403..., key_2: 403...}`,
+answer served by key_3. Ledger: key_1 and key_2 show 2 failed attempts each and then
+nothing — tried once, never retried.
+**README line:** "Two of four real keys were denied at the project level; a denied key
+is disabled and rotation continues, because waiting never fixes a 403 and failing the
+turn wastes the keys that work."
+
+---
+
+## D-144 · A transient 5xx must not end a 25-turn evaluation
+**Date:** 2026-08-20
+**Observed:** the first complete Gemini run died on
+`RemoteProtocolError: Server disconnected without sending a response.` Every call
+already spent was wasted.
+**Decision:** transient failures — dropped connections, 5xx, timeouts — rotate to the
+next key or rung instead of aborting. The loop is already bounded, so a genuine
+outage still terminates rather than spinning; and if *every* attempt was transient the
+error says so explicitly rather than reporting quota exhaustion, because nothing was
+actually exhausted.
+**Why the distinction is worth code:** the three classes need three different
+responses. Quota-exhausted → step down a rung. Key-rejected → disable and skip.
+Transient → try again elsewhere. Collapsing any two of them produces either an
+infinite retry or a needless abort.
+**Vindicated immediately:** the completed run logged **14 × 503 UNAVAILABLE ("this
+model is currently experiencing high demand")** and 6 further connection drops. Under
+the previous behaviour any one of them would have ended the run.
+**Evidence:** `test_quota_exhaustion_and_key_rejection_are_different`; the ledger's
+error breakdown.
+**README line:** "Quota exhaustion, a denied key and a dropped connection need three
+different responses — collapsing any two of them causes either an infinite retry or a
+needless abort."
+
+---
+
+## D-145 · Gemini rejects a JSON schema that Ollama accepts
+**Date:** 2026-08-20
+**Found by calling it, not by reading the docs.** `ANSWER_SCHEMA` used
+`"type": ["string", "null"]` for `refusal_reason`. Ollama accepts the union happily.
+Gemini's `response_schema` rejects it before a request is even sent — its type field
+is an enum admitting exactly one value, so the SDK fails Pydantic validation locally.
+**Decision:** `"type": "string"`, with the empty string carrying the "no refusal"
+case. The parser already treated `""` as absent, so nothing downstream changed.
+**Why this matters beyond the one field:** the project claims schema-constrained
+generation on *both* providers. A schema that constrains only one of them is not a
+contract, it is a contract on one path and a hope on the other — and it would have
+gone unnoticed indefinitely, because every Ollama run passed. A test now walks all
+seven schemas and fails on any union type.
+**Evidence:** `test_no_schema_uses_a_union_type`, parameterised over every schema.
+**README line:** "The citation schema had a union type that Ollama accepted and Gemini
+rejects — a constraint that only holds on one provider is not a contract, and only
+running both revealed it."
+
+---
+
+## D-146 · The quota engineering worked: 123 billed calls, zero rate-limit rejections
+**Date:** 2026-08-20
+**The claim under test:** a DB-backed sliding-window limiter enforcing RPM and RPD
+per `(model, key_alias)` should prevent the provider ever having to reject a request
+for rate.
+**Measured across the full Gemini evaluation — 607 calls billed against quota, 302
+served from cache:**
+
+| failure | count |
+|---|---:|
+| 503 UNAVAILABLE (provider-side load) | 14 |
+| schema validation (pre-fix, historical rows) | 12 |
+| 403 denied (the two dead keys) | 9 |
+| connection dropped | 6 |
+| **429 / RESOURCE_EXHAUSTED** | **0** |
+
+**Zero rate-limit rejections.** Every failure was the provider's availability, a dead
+key, or my own schema bug. The limiter never let a request through that the provider
+would have refused for rate.
+
+**The ladder stepped down for real**, which no local run could demonstrate:
+
+| synthesis rung | billed calls |
+|---|---:|
+| gemini-3.7-flash | 42 |
+| gemini-3.6-flash | 9 |
+| gemini-3.5-flash | 1 |
+
+RPD drained on the top rung and the client walked down, exactly as designed — and
+across keys before rungs, so capability degraded last.
+**The cost was higher than I estimated.** I budgeted ~25 synthesis calls; the run
+billed 123 Gemini calls, of which 59 were synthesis. The difference is D-136: the
+sufficiency judge rejects the first retrieval on every question, so each question
+costs a judge and usually a rewrite on top of the synthesis. The estimate was made
+before that behaviour existed and I did not revise it — that is the error, not the
+spend.
+**README line:** "Across 607 billed calls the provider never once rejected a request
+for rate: the durable limiter is the reason, and the synthesis ladder demonstrably
+stepped down three rungs under real quota pressure."
+
+---
+
+## D-147 · Gemini vs Ollama, measured — and where the comparison is contaminated
+**Date:** 2026-08-20
+**Identical corpus, identical thresholds, identical retrieval. Only the generator
+changed.**
+
+| Metric | Ollama `llama3.1:8b` | Gemini | LLM-dep. |
+|---|---:|---:|---|
+| Citation precision | 0.882 | **1.000** | yes |
+| Abstention accuracy | 1.000 (4/4) | **1.000 (4/4)** | yes |
+| Fact coverage (mean) | 0.660 | **0.881** | yes |
+| Route accuracy, single-turn | 0.917 (11/12) | **1.000 (12/12)** | yes |
+| Invented citation ids | 0 | **0** | yes |
+| Refusals carrying citations | 0 | **0** | yes |
+| Condensation drift rate | 0/13 | **0/13** | yes |
+| Papers per multi-hop answer | 1.00 | **1.00** | yes |
+| Route accuracy, conversational | 10/13 | **7/13** | yes |
+| Recall@5 (hybrid + rerank) | 0.646 | 0.646 | **no** |
+
+**The retrieval row is identical by construction, and that is the point of having
+measured it separately.** Everything model-independent is unchanged; only the
+generation columns move.
+
+**What Gemini fixed: `q11`.** The false-premise question failed on every earlier
+attempt. On Gemini: *"The premise of the question is incorrect: the 4-bit NormalFloat
+(NF4) quantisation scheme is not introduced or described by the LoRA paper. Instead,
+NF4 is introduced by the QLoRA paper"* — citing QLoRA, coverage 1.00. That is the
+last single-turn route failure closed, and it took the judge fix, relaxation *and* a
+stronger synthesiser together.
+
+**What Gemini did not fix: multi-hop.** Papers per multi-hop answer is **1.00 on both
+providers**. A stronger model with the cross-document rule in its prompt and passages
+from two papers in its context still answers from one. That rules out "the local model
+is not capable enough" as the explanation and points at context construction — which
+is where D-128 said the next fix belongs.
+
+**Where the comparison is contaminated, stated rather than buried.** Conversational
+route accuracy is *worse* on Gemini (7/13 vs 10/13), and the run logged 14 × 503
+"experiencing high demand" plus 6 dropped connections. Rotation kept the run alive,
+but a turn served after several failed attempts is not the same experiment as a turn
+served first time. **I do not claim Gemini is worse conversationally** — the run
+happened during a provider-load window and the single-turn half of the same run
+improved on every metric. Re-running it in a quieter window is the honest next step
+and has not been done.
+**README line:** "Gemini improves every generation metric on single-turn questions and
+closes the last route failure; the conversational half of the same run was measured
+during a provider-load window and is not a clean comparison."
+
+---
+
+## D-148 · Key aliases follow the key, not its slot
+**Date:** 2026-08-21
+**Context:** The user replaced the Gemini keys and moved the two working ones into
+slots 1 and 2.
+**What that exposed:** quota is accounted per `(model, key_alias)`, and the alias was
+the slot number. Moving a key handed its consumption to whatever now occupied its
+slot. Measured immediately after the swap: the two **brand-new** keys showed 20/20 and
+18/20 RPD already consumed on the top rung, while the keys that had actually spent it
+showed 2/20. Both directions wrong at once -- the limiter would refuse fresh quota and
+over-spend drained quota.
+**Decision:** the alias is `k_` plus the first 10 hex of `sha256(key)`. It follows the
+key across slots, gives a genuinely new key a genuinely new identity, never contains
+any of the key, and collapses duplicates -- the same key in two slots shares one quota
+bucket, and counting it twice would double the apparent capacity.
+**Consequence:** historical rows keyed on `key_1..key_4` no longer match any live key
+and are ignored for quota. That is a one-time loss of accounting for keys that can no
+longer be identified, and it is unavoidable. The conservative reading is that some
+quota was already spent -- which is what the 16 observed 429s in the next run were,
+and rotation absorbed every one.
+**Evidence:** `test_key_alias_follows_the_key_not_its_position`,
+`test_key_alias_never_contains_the_key`, `test_duplicate_keys_collapse_to_one_bucket`.
+**README line:** "Quota is accounted per key identity, not per slot in the env file --
+moving a key between slots otherwise hands its spent quota to whatever replaces it."
+
+---
+
+## D-149 · A 429 is a third failure class
+**Date:** 2026-08-21
+**Context:** After the alias migration the local ledger could no longer see spend that
+had really happened, so the provider began returning 429s the limiter had not
+predicted.
+**Decision:** `is_rate_limited()` joins the existing permanent/transient split. A 429
+means the provider disagrees with the local ledger; the provider wins, and the client
+rotates to the next key and then the next rung. The key is **not** disabled -- unlike a
+403, this recovers on its own.
+**Why three classes and not two:** each needs a different response. Quota exhausted →
+step down a rung. Key rejected → disable and skip. Rate limited → rotate but keep.
+Transient → try again elsewhere. Collapsing any two produces an infinite retry or a
+needless abort, and I have now had both.
+**Evidence:** 16 × 429 during the second Gemini run, all absorbed by rotation; the run
+completed. `test_a_rate_limited_key_rotates_rather_than_aborting`.
+**README line:** "A 429 means the provider disagrees with the local ledger -- the
+provider wins, and the client rotates rather than failing the turn."
+
+---
+
+## D-150 · The ledger timestamp format is a trap for ad-hoc queries
+**Date:** 2026-08-21
+**Context:** While diagnosing a live run I twice concluded the system was failing
+badly when it was healthy.
+**Cause:** `llm_calls.ts` is timezone-aware ISO-8601 (`2026-08-21T04:12:00+00:00`)
+while every other table's `created_at` uses SQLite's `datetime('now')`
+(`2026-08-21 04:12:00`). They compare as strings, and at index 10 `T` (84) sorts after
+a space (32) -- so for any row **from today**, `ts >= datetime('now','-5 minutes')` is
+true regardless of the actual time. The date saves you across days, which is exactly
+why it hides: it only misfires while inspecting a run in progress, which is the only
+time anyone runs such a query.
+**The limiter was never affected** -- it compares ISO to ISO throughout. This is a
+hazard for anything written by hand against the ledger.
+**Decision:** `db.iso_cutoff()` produces a correctly-formatted bound, the column
+carries a comment saying so, and a test demonstrates the trap with a two-hour-old row
+that the naive comparison wrongly includes.
+**Why not just normalise the column:** it would need a migration over existing rows,
+and the ISO format is the right one for a timestamp that must be unambiguous across
+timezones. The fix is to make the correct comparison easy, not to weaken the storage.
+**README line:** "Ledger timestamps are ISO-8601 while SQLite's own defaults are not;
+a helper exists because comparing the two by hand silently matches every row from
+today."
+
+---
+
+## D-151 · TPM is a third limit, and it was not being enforced
+**Date:** 2026-08-21
+**Context:** The account's published limits arrived as **RPM / TPM / RPD**. My ladder
+had RPM and RPD exactly right on all eight models. TPM -- 250,000 tokens per minute --
+was not tracked at all.
+**Why it had gone unnoticed:** RPM binds first under normal load. Five requests a
+minute at 8k tokens is 40k against a 250k ceiling, so TPM never fires. That is an
+argument for it being *usually* irrelevant, not for leaving it unenforced: it stops
+being irrelevant the moment prompts grow, or a 15 RPM volume model starts carrying
+long context, and the failure mode is a 429 the limiter promised would never happen.
+**Decision:** `Rung` carries `tpm`; `try_acquire` checks tokens already billed in the
+last minute plus an estimate for the request about to be made.
+**On the estimate:** token counts are only known after a call returns, so the check is
+"what has been spent" plus `len(prompt)//4 + 512`. Over-estimating costs a rung step;
+under-estimating costs a 429. Over-estimating is the correct direction to be wrong in.
+**Also recorded:** Gemini 2.5 Pro and 3.1 Pro are published at 0/0/0 on this tier.
+They are absent from both ladders rather than listed-and-skipped -- a rung the account
+cannot use is not a fallback, it is a guaranteed failed attempt on the way down.
+**Evidence:** `test_tpm_blocks_a_call_that_would_exceed_the_token_ceiling`,
+`test_tpm_window_rolls_off`, `test_cached_calls_do_not_consume_tokens`,
+`test_every_ladder_rung_declares_all_three_limits`.
+**README line:** "Three limits are enforced, not two -- RPM usually binds first, which
+is exactly why TPM is the one that gets forgotten until it produces a 429 the limiter
+promised could not happen."
+
+---
+
+## D-152 · Synthesis falls back to the volume ladder; volume never falls back to synthesis
+**Date:** 2026-08-21
+**Context:** Until now, a drained synthesis ladder raised `QuotaExhausted` and the
+turn failed. With every rung and every key spent, the agent simply stopped.
+**Decision:** when the synthesis ladder is exhausted, serve the call from the **volume**
+ladder instead. The answer gets worse; the agent keeps working. That is "answer
+quality degrades last" taken to its conclusion -- a weaker cited answer beats no
+answer, and every other guarantee (validated ids, groundedness, abstention) is
+unchanged because they are enforced in code rather than by the model.
+
+**The asymmetry is the entire point and is enforced, not merely intended.** Volume
+exhausted never escalates to synthesis. Judging and condensing on reasoning quota is
+precisely the failure the two-ladder split exists to prevent: about four turns would
+drain the answer budget, and the failure would then land on answer generation -- the
+one thing a reviewer sees. Volume work fails instead.
+`test_volume_never_falls_back_to_synthesis` asserts it.
+
+**Measured by draining the real ladder shape against four keys:**
+
+| stage | calls/day |
+|---|---:|
+| synthesis ladder — 6 rungs x 20 RPD x 4 keys | 480 |
+| degraded onto volume — 2 rungs x 500 RPD x 4 keys | 4,000 |
+| **total before the agent gives up** | **4,480** |
+
+Each rung drained exactly 80 in strict capability order before stepping down. The
+fallback is a **9.3x** increase in how long the agent keeps answering.
+
+**A second measurement worth keeping, because it looked like a bug and was not.** The
+same drain in a tight loop stopped at 260 calls, not 480 -- because RPM, not RPD,
+binds in a burst: 5 RPM x 4 keys = 20 per rung, 10 x 4 = 40 for the 2.5-flash-lite
+rung, 15 x 4 = 60 per volume rung. 20x5 + 40 + 60 + 60 = 260 exactly. Both numbers are
+correct; they measure different limits, and only the fake-clock run measures the daily
+ceiling.
+**Consequence:** degraded calls are logged as `<purpose>:degraded` and surfaced by
+`budget`, so a degraded run is visible rather than just looking cheaper. The behaviour
+is switchable via `synthesis_falls_back_to_volume` for anyone who would rather fail
+than answer with a lite model.
+**Revisit if:** measured answer quality on the volume rungs turns out to be bad enough
+that refusing would genuinely serve the user better. That has not been measured.
+**README line:** "When the synthesis ladder drains, answers are served by volume
+models rather than failing -- 480 calls of capacity becomes 4,480 -- and the reverse
+is forbidden, because judging on reasoning quota is the failure the split exists to
+prevent."
+
+---
+
+## D-153 · The 2.5-flash-lite placement rule was retired, and why that is now safe
+**Date:** 2026-08-21
+**Context:** The user asked for `gemini-2.5-flash-lite` on the **volume** ladder.
+`Config.validate()` raised on exactly that, and three tests enforced it. D-004 called
+its placement at the bottom of synthesis load-bearing.
+**The question worth asking is what the guard was actually protecting.** Not the
+placement -- the *fact*. The model is named like a volume model and capped at **20
+RPD, not 500**. The original danger was assuming 500, sending it volume traffic, and
+having it exhaust after twenty condensation calls with the failure surfacing somewhere
+unrelated.
+
+**That danger no longer exists, for reasons built since D-004:**
+- the config records `rpd=20`, confirmed against the account's published limits;
+- the limiter enforces the true number rather than an assumed one;
+- exhaustion steps down a rung instead of cascading;
+- a 429 rotates rather than aborting (D-149);
+- there is now an unlimited local rung beneath everything (D-154).
+
+**Decision:** move it to the volume ladder as asked, and rewrite the assertion to
+guard the fact instead of the position -- any declaration giving it `rpd > 20` still
+raises. The protection survives; the obsolete constraint does not.
+**Consequence:** the synthesis ladder loses a rung (480 -> 400 calls/day across four
+keys) and volume gains 80. Answer quality is *better* protected by this, not worse:
+the rung that left synthesis was its weakest, and synthesis now falls through to the
+whole volume ladder anyway.
+**Evidence:** `test_the_trap_model_may_not_be_declared_with_volume_scale_rpd`,
+`test_the_trap_model_is_allowed_on_the_volume_ladder_at_its_true_rpd`.
+**Revisit if:** the published RPD ever changes. The guard checks the number, so it
+will keep working.
+**README line:** "The 2.5-flash-lite guard now protects the fact rather than the
+placement: it may sit anywhere, but never be declared with volume-scale RPD."
+
+---
+
+## D-154 · A local rung at the bottom, so quota can never end the run
+**Date:** 2026-08-21
+**Decision:** the volume ladder ends in `qwen2.5:14b` served by Ollama -- no key, no
+quota, no rotation. Since synthesis falls through to volume (D-152), the complete
+chain for any task is:
+
+```
+3.7-flash -> 3.6 -> 3.5 -> 3-flash-preview -> 2.5-flash        (400/day, 4 keys)
+   -> 3.5-flash-lite -> 3.1-flash-lite                        (4000/day)
+   -> 2.5-flash-lite                                          (80/day)
+   -> qwen2.5:14b, local                                      (unlimited)
+```
+
+**The agent can no longer fail for lack of quota.** It can only fail because Ollama is
+not running -- which is a different problem with a different fix, and `doctor` reports
+it explicitly.
+**Two invariants enforced in `validate()`:**
+- a local rung must be **last**. It is unlimited, so anything below it is unreachable,
+  and a silently unreachable fallback is worse than no fallback.
+- a model may still not appear on both ladders, so the local rung lives only on
+  volume; synthesis reaches it by falling through.
+**Implementation note worth recording:** `_complete_ollama` picks its model from the
+offload mode, which is right for the default path and wrong for a ladder rung that
+names its model explicitly. `_complete_local` exists so the rung's name wins. Reusing
+the former would have silently served `llama3.1:8b` wherever the ladder said
+`qwen2.5:14b` -- the ladder would have looked correct and been a lie.
+**Measured, draining the real shape against four keys:** every rung consumed exactly
+its published capacity in order -- 80 per synthesis rung, 2000 per 500-RPD volume
+rung, 80 for 2.5-flash-lite -- before the local floor took over and did not exhaust.
+**README line:** "The ladder ends in a local model, so the agent cannot fail for lack
+of quota -- only because Ollama is not running, which `doctor` says plainly."
+
+---
+
+## D-155 · Ollama does not run by default, and the local rung depends on it
+**Date:** 2026-08-21
+**Measured on this machine:** no `ollama.exe` process, no entry in the HKCU `Run` key,
+no Windows service. Ollama runs **only** when something launches it -- `ollama serve`,
+or implicitly `ollama run` / `ollama list`, which spawn the server that then holds the
+caller's stdout pipe (D-105).
+**Why it matters now:** the local rung is the floor of the ladder, and a floor that is
+usually absent is not a floor. The agent's "cannot fail for lack of quota" property is
+conditional on a server that is not running after a reboot.
+**Decision:** do not auto-start it. Spawning a daemon is not the agent's job, and
+D-105 is a direct record of what shelling out to the CLI costs. `doctor` reports the
+local rung as unavailable when the server is down, and the ladder raises the real
+error rather than a quota error when it cannot reach it.
+**Consequence for anyone reading the quota numbers:** the unlimited floor requires
+`ollama serve` to be running. On a fresh boot it is not.
+**README line:** "Ollama does not auto-start on Windows -- no service, no Run key -- so
+the local fallback rung is only a floor while `ollama serve` is up."
+
+---
+
+## D-156 · CORRECTION: the Gemini conversational gap is real, not provider load
+**Date:** 2026-08-21
+**What I claimed in D-147 and in the README:** conversational route accuracy came out
+lower on Gemini (7/13, 8/13) but both runs coincided with `503 UNAVAILABLE` windows, so
+I declined to call Gemini worse conversationally and said a clean re-run was the
+honest next step.
+
+**I have now run it a third time, in materially better conditions, and the claim does
+not survive.**
+
+| run | 503s | p50 latency | conversational |
+|---|---:|---:|---:|
+| 1 | 14 | — | 7/13 |
+| 2 | 32 | 57 s | 8/13 |
+| 3 | **13** | **22 s** | **7/13** |
+
+Run 3 had the fewest failures and less than half the latency of run 2, and scored the
+same as run 1. **There is no relationship between provider load and the conversational
+number.** Load was a plausible confound and it was wrong; three runs is enough to say
+so.
+
+**Where the gap actually is.** It localises entirely to scenario A:
+
+| turn | Ollama | Gemini | depends on condensation? |
+|---|---|---|---|
+| A1 "What problem does LoRA solve?" | refuse | refuse | **no** — turn 1 skips condensation |
+| A2 "How does the quantised version reduce memory further?" | answer | refuse | yes |
+| A3 "What does it report for a 65B model?" | answer | abstain | yes |
+| A4 "Does that cost quality?" | answer | refuse | yes |
+
+A1 fails identically on both, and must: turn 1 skips condensation, so the query,
+retrieval and rerank score are byte-identical regardless of provider, and the route is
+decided by a local cross-encoder score. Turns 2-4 are the condensation-dependent ones,
+and they are exactly the ones that diverge.
+
+**The finding underneath, which is the useful part.** Gemini's condensations pass the
+drift guard -- **0/13 drift on every run, both providers** -- and still retrieve worse
+on this corpus. The guard prevents a rewrite from introducing a *hallucinated* term.
+It does not, and cannot, ensure the rewrite is a *good query*. Those are different
+properties, and I had been treating a clean drift rate as evidence for both.
+**Decision:** correct the README rather than leave a comfortable explanation standing.
+The single-turn story is unambiguous -- Gemini wins on every metric, 1.000 route
+accuracy three times running -- and the conversational story is a real regression that
+I do not yet have a mechanism for.
+**What would settle it, not done:** log the condensed query for every turn in
+`eval` (currently only `chat-eval` writes them) and diff Ollama's rewrites against
+Gemini's on the same history. That is a small change and the obvious next step.
+**README line:** "Gemini scores lower conversationally, and it is not provider load --
+three runs across very different load conditions gave 7, 8 and 7. The gap sits in the
+condensation-dependent turns: those rewrites pass the drift guard and still retrieve
+worse, because passing the guard and being a good query are different properties."
+
+---
+
+## D-157 · CORRECTION 2: the conversational gap is the sufficiency judge, not condensation
+**Date:** 2026-08-21
+**This is the second time I have been wrong about this, and the logging the user asked
+for is what settled it.** D-147 blamed provider load; D-156 corrected that to
+condensation quality. Both were wrong.
+
+**What the instrumentation shows.** Logging the query retrieval *actually ran on* --
+not just the condensation -- exposed that the sufficiency loop rewrites the query
+again afterwards, and it is that text the router scores. The `condensed` field I had
+been logging was never the whole story.
+
+The decisive evidence is the turns where **both providers fired zero loops**:
+
+| turn | Ollama top | Gemini top |
+|---|---:|---:|
+| D t1 | 0.9891 | 0.9891 |
+| D t2 | 0.000 | 0.000 |
+| D t3 | 0.8404 | 0.8336 |
+
+Identical, as retrieval must be -- it is a local encoder over a local index. Now the
+turns where the loop counts differ:
+
+| turn | ollama loops / top | gemini loops / top | routes |
+|---|---|---|---|
+| A t1 | **1** / 0.9857 | **0** / 0.6837 | answer / refuse |
+| A t2 | **2** / 0.8213 | **1** / 0.000 | answer / refuse |
+| A t4 | **2** / 0.9898 | **1** / 0.7167 | answer / refuse |
+| B t1 | **2** / 0.9661 | **0** / 0.188 | answer / refuse |
+
+Every divergence tracks the loop count. Totals: **Ollama 15 loops, Gemini 10.**
+
+**The mechanism.** A1 is the cleanest case: turn 1 skips condensation, so both
+providers retrieve on the byte-identical raw question. Ollama's judge called the first
+retrieval *insufficient*, the loop rewrote to *"What problem does LoRA solve for large
+language models' adaptation to downstream tasks?"*, and the score rose to 0.9857.
+Gemini's judge called the same evidence *sufficient*, no rewrite happened, and the
+router then refused the raw query on 0.6837 -- below `tau_low`.
+
+**The architectural finding, which is the useful part.** The judge and the router are
+two independent gates asking overlapping questions, and the judge runs first. A judge
+that accepts early **denies the router a better query**, and the router then refuses on
+a score a rewrite would have lifted. Ollama's judge is over-eager -- D-136 recorded
+that as pure latency cost -- and here that over-eagerness is accidentally load-bearing.
+Gemini's judge is better calibrated and the pipeline is *worse* for it.
+
+**Decision:** record the mechanism; do not tune the judge to fix the number. Making
+Gemini's judge more pessimistic would be fitting to a 13-turn set, and the honest
+reading is that the gate ordering is wrong, not that one model judges badly.
+**What I would change, not built:** let the router see the *best* score across loop
+iterations rather than the last, or run the router before the judge and let a
+sub-threshold score trigger the loop rather than a refusal. Either removes the
+coupling. Both are more than a tuning change.
+**Evidence:** `outputs/conversations/_condensation.{ollama,gemini}.json`, and
+`research-agent condensation-diff` which prints the rewrites side by side.
+**README line:** "The conversational gap is not condensation and not provider load: a
+judge that accepts the first retrieval denies the router a rewritten query, and the
+router then refuses on a score the rewrite would have lifted."
+
+---
+
+## D-158 · Submission audit: five defects found by reading the repo as a reviewer
+**Date:** 2026-08-21
+Asked whether the repo was ready to submit, I checked it the way a reviewer would --
+clone it clean, follow the README, and cross-reference every claim against the
+committed artifacts -- rather than re-reading my own summary of it. Five things were
+wrong, and four of them were invisible from inside the build.
+
+**1. `outputs/eval_report.md` was mislabelled.** The header printed
+`cfg.ollama_model` unconditionally, so a Gemini run produced a file headed
+*"Generation: `llama3.1:8b` via Ollama"* over Gemini's numbers -- citation precision
+1.000, fact coverage 0.881, single-turn route 1.000, all of which the README's own
+comparison table attributes to Gemini, not to the local model. The one artifact a
+reviewer cross-references against the README contradicted it. `GenerationMetrics` now
+carries the provider and model that actually served the run, and the report prints
+those. The traceability row saying *"Gemini results -- TBD, no Gemini call has been
+made"* was stale by three full Gemini runs; it now names the provider that produced
+sections 2-3.
+
+**2. Both providers wrote the same transcript filenames.** Whichever ran last owned
+`outputs/conversations/*.md`, and Gemini ran last. The committed showcase scenario --
+scenario A, the coreference gate the whole design is built around -- showed **four
+refusals in four turns**, including a refusal of *"What problem does LoRA solve?"*,
+a question the corpus plainly answers and the default path answers at 0.9857. A
+reviewer opening the flagship deliverable saw the agent fail completely. The
+unsuffixed name now belongs to the Ollama path, which is both the default and the
+only one reproducible without a key; other providers write `{scenario}.{provider}.md`.
+Same rule for `eval_report.md`.
+
+**3. Nine of twelve committed answers reported `Latency: 0 ms`.** Two cache layers
+exist and the eval harness cleared one. `answer_cache` short-circuits a whole turn;
+the `DiskCache` under `.cache/llm` short-circuits an individual LLM call on
+sha256(model+prompt). With only the first cleared, **557 of 1520 calls were served
+from disk at a recorded 0 ms**, so artifacts reported zero for turns that genuinely
+cost seconds. The harness's own comment claimed the numbers "describe the pipeline
+rather than the cache's history"; half of that was false. `evaluate.drop_caches()`
+now empties both and reports what it discarded, and `Answer.cached` labels a genuine
+cache hit rather than letting a bare zero imply a broken metric.
+
+**4. Seven Makefile targets printed "not yet implemented (Step N)".** `fetch-corpus`,
+`ingest`, `index`, `ask`, `chat`, `eval`, `eval-retrieval` -- every one implemented in
+the CLI for phases, every one still a Step-1 stub in the Makefile, all seven
+advertised as working by `make help`. Directly against the spec's no-placeholder rule,
+and it makes a finished repo read as abandoned. All wired to their real commands.
+
+**5. The README's conversational route accuracy was stale.** It claimed 10/13 local;
+the measured value on current code is **9/13**. Two independent cache-cleared runs
+produced byte-identical condensations, final queries, loop counts, scores and routes,
+so this is not run-to-run variance -- the number simply predated a change and was
+never re-measured.
+
+**Why this is worth an entry.** Four of the five are the same failure: an artifact and
+a claim drifted apart, and nothing in the build checked them against each other.
+Tests passed throughout -- 165 of them -- because every one tests code, and none of
+these were code defects. **What I would add, not built:** a `verify-artifacts` command
+that re-reads `outputs/` and fails when a committed number disagrees with the README,
+so the traceability table is enforced rather than asserted.
+**Evidence:** this file's git history, `outputs/`, and the clean-clone run in the
+scratchpad that reproduced fetch, ingest and index from the committed manifest alone.
+**README line:** "Every number in this README is regenerated from `outputs/` by a
+cold-cache run; the transcripts and the evaluation report are written per provider so
+one run cannot overwrite another's evidence."
+
+---
+
+## D-159 · One metric, two definitions, and the README quoted the friendlier one
+**Date:** 2026-08-21
+Running `chat-eval` and `eval` back to back on the same corpus, provider and code
+produced **9/13** and **10/13** for conversational route accuracy. Same 13 turns,
+same session, two numbers.
+
+**Cause.** Two implementations of "was this route correct". `evaluate._route_ok`
+treats `refuse` and `abstain` as interchangeable when either is expected -- they are
+different mechanisms with the same outcome, no answer and no citations. `chat-eval`
+carried its own inline `expected == actual` instead. They disagreed on exactly one
+turn: **C t3, expected `refuse`, got `abstain`** -- the agent retrieved something
+above threshold, synthesised, and the model itself judged the evidence unsupportive.
+That is the outcome the scenario tests for, reached the long way.
+
+**Why this was worse than a wrong number.** The README quoted 10/13 while the
+committed artifact recorded 9/13, so the two disagreed and neither was wrong on its
+own terms. A reviewer cross-referencing them finds a contradiction and has no way to
+tell which is the claim and which is the evidence.
+
+**Decision:** `route_ok` is now public and is the single definition; `chat-eval` calls
+it. `_route_ok` stays as an alias so existing call sites keep working. **10/13 is the
+defensible number** -- counting C t3 as a failure penalises a correct refusal for
+arriving by synthesis rather than by score, and the transcript still shows the
+mechanism (`Route: abstain (expected refuse)`) so nothing is hidden by the rollup.
+
+**The general lesson, which is the reusable part.** Every metric reported in more than
+one place needs one implementation, and the check that catches this is running the two
+commands back to back and diffing -- not reading either one. Duplicated metric logic
+does not fail loudly; it produces two plausible numbers and lets the friendlier one
+reach the README. Related: [[D-158]].
+**Evidence:** `outputs/conversations/_condensation.ollama.json` and
+`outputs/eval_report.md`, regenerated together after the fix.
+**README line:** "Refusing on score and abstaining after synthesis count as the same
+correct outcome -- no answer, no citations -- and that rule has one implementation
+used by every command that reports it."
+
+---
+
+## D-160 · A rung you cannot time out of is not a rung
+**Date:** 2026-08-21
+The Gemini evaluation hung. Not slowly -- completely, for ten minutes, with no output
+and no error, one minute into a thirteen-turn run.
+
+**Diagnosis from the ledger, which is why the ledger writes a row before the call and
+not after.** The last row was `gemini-3.6-flash` / `synthesise` with `ok=NULL` and
+`latency_ms=NULL`: a request that started and never returned. No rows after it. Ollama
+reported no loaded model, so nothing had fallen through to the local floor either. The
+process was blocked inside a single HTTP request.
+
+**Cause.** `GeminiProvider.generate` accepted `timeout_s` and never used it. The Ollama
+path passed its timeout to `httpx`; this path called `generate_content` with the SDK's
+default, which is no timeout at all. `cfg.gemini_timeout_s = 60.0` was dead config that
+looked live. Gemini was returning `503 UNAVAILABLE` at the time -- thirteen of them on
+`gemini-3.7-flash` -- so the degraded service was real, and one request simply never
+came back.
+
+**Why this was the worst bug in the build, despite being three lines.** The fallback
+ladder is the headline engineering claim, and `doctor` asserts *"the ladder cannot run
+out of quota while Ollama is up."* That is true about quota and was false about
+availability: an unbounded wait defeats every rung below it. The ladder cannot walk
+down from a request that never returns. All the quota accounting, the two-ladder split
+and the local floor were correct and unreachable.
+
+**Decision:** the client is constructed with `HttpOptions(timeout=...)` in
+milliseconds, carrying `cfg.gemini_timeout_s`. Timeout text was already classified
+transient (`readtimeout`, `timed out`, `deadline exceeded`), so a timeout now walks the
+ladder exactly like a 503 rather than blocking it. Two tests cover it: one asserts the
+timeout reaches the client in milliseconds, one asserts a timed-out request is
+transient and is not mistaken for a bad key or an exhausted quota.
+
+**The general lesson.** A parameter accepted and dropped is worse than one never
+offered -- it reads as configured behaviour at every call site and in `.env.example`.
+Grepping for `timeout_s` showed it threaded through every layer; only reading the leaf
+showed it stopping there. **What I would add, not built:** a test per provider that a
+hung transport surfaces as a transient error within the configured budget, so no
+provider can be added later with this same gap.
+**Evidence:** `llm_calls` rows for 2026-08-21T07:46:52Z (ok=NULL, never resolved) and
+the 503/429 error breakdown for the same window.
+**README line:** "Every provider call is bounded by a timeout, and a timeout walks the
+ladder like any other transient failure -- an unbounded wait would defeat every rung
+below it."
+
+---
+
+## D-161 · Narrowing D-157: only turn 1 is a clean cross-provider control
+**Date:** 2026-08-21
+D-157 argued that the conversational gap is the sufficiency judge, and supported it
+with "the turns where both providers fired zero retrieval loops score identically."
+Regenerating both providers cold on the current revision **falsified the supporting
+claim while confirming the conclusion**, so the entry needs narrowing rather than
+reversing.
+
+**What broke.** Two zero-loop turns no longer match: C t2 scores 0.9511 against 0.9925
+and D t3 scores 0.8404 against 0.8459. Zero loops means no *rewrite* -- it does not
+mean the two providers retrieved on the same string. Condensation is itself an LLM
+call, and from turn 2 onward the condensed text differs. My original phrasing quietly
+assumed zero loops implied an identical query, and on the earlier run the condensations
+happened to agree closely enough to hide it.
+
+**What survives, and is stronger for being narrower.** Turn 1 skips condensation
+entirely, so there and only there both providers retrieve on the byte-identical user
+question. **D t1: 0.9891 and 0.9891, exactly equal**, both at zero loops -- retrieval
+is provider-independent, as it must be. **A t1: same setup, and Ollama scores 0.9857 to
+Gemini's 0.6837**, because Ollama's judge called the evidence insufficient and the loop
+rewrote the query while Gemini's accepted it. Same input, same retriever, opposite
+outcome, and the only difference is whether the judge asked for another pass. That is
+the mechanism, isolated by a single pair of turns rather than by a trend.
+
+Loop totals on the current revision: **Ollama 15, Gemini 8** (D-157 said 10, measured
+before the two-ladder change).
+
+**Decision:** keep D-157's conclusion, restate its evidence as the turn-1 control only,
+and say plainly in the README what is *not* claimed. A weaker piece of evidence stated
+accurately is worth more than a stronger one that a reviewer can falsify by opening the
+JSON -- and this one was falsifiable in about a minute.
+**Evidence:** `outputs/conversations/_condensation.{ollama,gemini}.json`, both
+regenerated cold on the same revision. Supersedes the evidence paragraph of [[D-157]].
+**README line:** "Only turn 1 skips condensation, so it is the only clean
+cross-provider control -- and it is the one that isolates the judge."

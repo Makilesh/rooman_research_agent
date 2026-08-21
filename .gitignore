@@ -1,22 +1,24 @@
 
+
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
+/m
 
-# ─── Corpus: fetched by `make fetch-corpus` from data/manifest.yaml.
-#     The manifest is the reproducible artifact; the PDFs are arXiv's to
-#     distribute, not mine (D-006).
+# ─── Corpus ──────────────────────────────────────────────────────────────────
+# Fetched by `research-agent fetch` from data/manifest.yaml. The manifest is the
+# reproducible artifact; the PDFs are arXiv's to distribute, not mine (D-006).
 data/sources/*.pdf
 data/sources/*.md
 data/sources/*.txt
 
 # ─── Generated state ─────────────────────────────────────────────────────────
+# Rebuildable from the corpus in about a minute, and large.
 storage/
 *.db
 *.db-wal
 *.db-shm
 *.npy
 .cache/
-*m/
 
 # ─── Python ──────────────────────────────────────────────────────────────────
 .venv/
@@ -33,5 +35,18 @@ dist/
 Thumbs.db
 .DS_Store
 
-# Private working notes — not part of the deliverable (user instruction 2026-08-20)
-m/
+# ─────────────────────────────────────────────────────────────────────────────
+#  DELIBERATELY NOT IGNORED — outputs/ is committed on purpose.
+#
+#  outputs/answers/        12 cited answers, .md + .json
+#  outputs/conversations/  4 full multi-turn transcripts
+#  outputs/eval_report.md  every measured number
+#
+#  If a reviewer's machine cannot run Ollama, or they skip setup entirely, the
+#  results are still on the page and still scoreable. That is worth more than the
+#  ~90 KB it costs.
+#
+#  The .json files carry only CITED passages, truncated to a 600-character
+#  excerpt. Committing full passage text would re-introduce the redistribution
+#  question that D-006 avoids by not committing the PDFs.
+# ─────────────────────────────────────────────────────────────────────────────

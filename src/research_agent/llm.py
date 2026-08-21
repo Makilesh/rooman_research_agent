@@ -30,6 +30,62 @@ from .config import Config, Ladder, Rung
 RPM_WINDOW = timedelta(minutes=1)
 RPD_WINDOW = timedelta(hours=24)
 
+# Substrings that identify a permanently unusable key rather than a transient
+# failure. Matched on the exception text because the SDK surfaces these as generic
+# ClientErrors carrying a message rather than as distinct types.
+_PERMANENT_KEY_ERRORS = (
+    "denied access",
+    "API_KEY_INVALID",
+    "API key not valid",
+    "PERMISSION_DENIED",
+    "consumer has been suspended",
+)
+
+
+def is_permanent_key_error(exc: Exception) -> bool:
+    text = str(exc)
+    return any(marker.lower() in text.lower() for marker in _PERMANENT_KEY_ERRORS)
+
+
+# Failures that are worth trying again on another key or rung. A dropped connection
+# or a 5xx says nothing about the key -- aborting a 25-turn evaluation because one
+# request was disconnected wastes every call already spent.
+_TRANSIENT_ERRORS = (
+    "server disconnected",
+    "remoteprotocolerror",
+    "connection reset",
+    "connecterror",
+    "readtimeout",
+    "timed out",
+    "503",
+    "502",
+    "500 internal",
+    "unavailable",
+    "deadline exceeded",
+)
+
+
+_RATE_LIMIT_ERRORS = ("429", "resource_exhausted", "rate limit", "quota exceeded")
+
+
+def is_rate_limited(exc: Exception) -> bool:
+    """The provider says this (model, key) is out of quota right now.
+
+    Distinct from both other classes. Waiting fixes it, unlike a 403; but retrying
+    the SAME rung immediately does not, unlike a dropped connection. The correct
+    response is to rotate -- next key, then next rung -- which is what the limiter
+    is meant to have prevented ever being necessary. Reaching here means the local
+    accounting and the provider's disagree, so the provider wins.
+    """
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _RATE_LIMIT_ERRORS)
+
+
+def is_transient_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in text for marker in _TRANSIENT_ERRORS)
+
+
 # Pseudo-key for Ollama, which has no quota. Present so every ledger row has a
 # key_alias and `budget` needs no special case.
 LOCAL_KEY = "local"
@@ -56,6 +112,18 @@ class QuotaExhausted(RuntimeError):
 
 class MalformedResponse(RuntimeError):
     """The model returned something that is not valid JSON for the given schema."""
+
+
+class KeyRejected(RuntimeError):
+    """A key was refused for a reason no amount of waiting will fix.
+
+    Distinct from quota exhaustion, and the distinction is load-bearing. A saturated
+    key recovers on its own; a key whose project has been denied access, or which is
+    malformed or revoked, never will. Treating the second like the first would retry
+    it forever; treating it like a transport error would abort the turn even though
+    three other keys are sitting idle. Neither is right -- the key is disabled for the
+    process and rotation continues.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,11 +256,22 @@ class GeminiProvider:
         self._transport = transport
         self._clients: dict[str, Any] = {}
 
-    def _client(self, api_key: str) -> Any:
+    def _client(self, api_key: str, timeout_s: float) -> Any:
         if api_key not in self._clients:
             from google import genai
+            from google.genai import types
 
-            self._clients[api_key] = genai.Client(api_key=api_key)
+            # The SDK defaults to no timeout, and `timeout_s` used to be accepted
+            # here and silently dropped -- the Ollama path honoured it, this one did
+            # not. A single hung request then blocked the process indefinitely and
+            # took the whole fallback ladder with it: the ledger showed a
+            # `synthesise` row with ok=NULL that never resolved, no further calls,
+            # and no walk down to the local floor. An unbounded wait defeats the
+            # point of having rungs to fall to. HttpOptions.timeout is milliseconds.
+            self._clients[api_key] = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),
+            )
         return self._clients[api_key]
 
     def generate(
@@ -215,7 +294,7 @@ class GeminiProvider:
             cfg["response_mime_type"] = "application/json"
             cfg["response_schema"] = schema
 
-        resp = self._client(api_key).models.generate_content(
+        resp = self._client(api_key, timeout_s).models.generate_content(
             model=model, contents=prompt, config=cfg or None
         )
         usage = getattr(resp, "usage_metadata", None)
@@ -261,6 +340,22 @@ class Ledger:
         rpd = self.conn.execute(sql, (model, key_alias, self._iso(now - RPD_WINDOW))).fetchone()[0]
         return rpm, rpd
 
+    def tokens_used(self, model: str, key_alias: str) -> int:
+        """Prompt + completion tokens billed in the last minute.
+
+        Only known after a call returns, so this measures what has already been
+        spent; the caller adds an estimate for the request it is about to make. That
+        is the correct direction to be approximate in -- over-estimating costs a rung
+        step, under-estimating costs a 429.
+        """
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(prompt_tokens, 0) + "
+            "COALESCE(completion_tokens, 0)), 0) FROM llm_calls "
+            "WHERE model = ? AND key_alias = ? AND cached = 0 AND ts >= ?",
+            (model, key_alias, self._iso(self.now() - RPM_WINDOW)),
+        ).fetchone()
+        return int(row[0] or 0)
+
     def try_acquire(
         self,
         model: str,
@@ -271,14 +366,23 @@ class Ledger:
         prompt_sha: str,
         provider: str,
         ladder: Ladder | None,
+        tpm: int | None = None,
+        est_tokens: int = 0,
     ) -> int | None:
         """Reserve one request slot, or return None immediately if saturated.
+
+        Checks all three published limits: requests per minute, tokens per minute,
+        and requests per day. RPM usually binds first -- five requests of 8k tokens is
+        40k against a 250k TPM ceiling -- but that stops being true as soon as prompts
+        grow or a 15 RPM volume model carries long context.
 
         Non-blocking on purpose. Sleeping on a saturated key while another key sits
         idle would make rotation add no real capacity at all.
         """
         used_rpm, used_rpd = self.used(model, key_alias)
         if used_rpm >= rpm or used_rpd >= rpd:
+            return None
+        if tpm and est_tokens and self.tokens_used(model, key_alias) + est_tokens > tpm:
             return None
         cur = self.conn.execute(
             "INSERT INTO llm_calls (ts, provider, model, key_alias, ladder, purpose, "
@@ -314,11 +418,14 @@ class Ledger:
         )
         self.conn.commit()
 
-    def remaining(self, model: str, key_alias: str, rpm: int, rpd: int) -> dict[str, int]:
+    def remaining(self, model: str, key_alias: str, rpm: int, rpd: int,
+                  tpm: int = 0) -> dict[str, int]:
         used_rpm, used_rpd = self.used(model, key_alias)
+        used_tpm = self.tokens_used(model, key_alias) if tpm else 0
         return {
             "rpm_used": used_rpm, "rpm_limit": rpm, "rpm_left": max(0, rpm - used_rpm),
             "rpd_used": used_rpd, "rpd_limit": rpd, "rpd_left": max(0, rpd - used_rpd),
+            "tpm_used": used_tpm, "tpm_limit": tpm, "tpm_left": max(0, tpm - used_tpm),
         }
 
 
@@ -378,6 +485,14 @@ class LLMClient:
 
     def __post_init__(self) -> None:
         self.ledger = Ledger(self.conn, self.now)
+        # Keys refused for a permanent reason, skipped for the rest of
+        # this process. Not persisted: a key restored on the provider's
+        # side should work again on the next run without an edit here.
+        self.disabled_keys: dict[str, str] = {}
+        # Synthesis calls that had to be served by a volume model.
+        # Surfaced by `budget` so a degraded run is visible rather than
+        # silently cheaper-sounding.
+        self.degraded_calls: int = 0
         self.cache = DiskCache(self.cfg.llm_cache_dir)
         if self.ollama is None:
             self.ollama = OllamaProvider(
@@ -392,16 +507,35 @@ class LLMClient:
 
     # -- keys ---------------------------------------------------------------
     @staticmethod
+    def key_alias(key: str) -> str:
+        """A stable, non-secret identifier for a key.
+
+        Derived from the key material, never from its position in the env file, and
+        never containing any of the key itself.
+
+        The positional scheme this replaces was actively wrong. Quota is accounted
+        per `(model, key_alias)`, so moving a key from slot 3 to slot 1 handed its
+        consumption to whatever now sits in slot 3. Observed exactly that: two fresh
+        keys inherited 20/20 and 18/20 RPD from their predecessors while the keys
+        that had actually spent it showed 2/20. The limiter would then refuse the
+        fresh quota and over-spend the drained quota -- both directions wrong at once.
+        """
+        return "k_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:10]
+
+    @staticmethod
     def load_keys(cfg: Config, environ: dict[str, str]) -> dict[str, str]:
         """Read GEMINI_API_KEY_1..N. Absent keys are simply absent -- not an error.
 
         The Ollama path must work with no key at all, so this never raises.
+        Duplicate keys across slots collapse to one entry, which is correct: they
+        share one quota bucket, and counting them twice would double the apparent
+        capacity.
         """
         keys: dict[str, str] = {}
         for i in range(1, cfg.gemini_max_keys + 1):
             value = (environ.get(f"{cfg.gemini_key_env_prefix}{i}") or "").strip()
             if value:
-                keys[f"key_{i}"] = value
+                keys[LLMClient.key_alias(value)] = value
         return keys
 
     # -- the call -----------------------------------------------------------
@@ -434,6 +568,39 @@ class LLMClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise MalformedResponse(f"Response was not valid JSON: {exc}") from exc
+
+    def _complete_local(
+        self, model: str, prompt: str, purpose: str, ladder: Ladder,
+        schema: dict[str, Any] | None, params: dict[str, Any] | None,
+    ) -> Completion:
+        """Serve one call from a named local model, bypassing offload-mode selection.
+
+        `_complete_ollama` picks its model from the offload mode; a ladder rung names
+        the model explicitly, and that name has to win.
+        """
+        params = dict(params or {})
+        params.setdefault("temperature", self.cfg.llm_temperature)
+        params.setdefault("seed", self.cfg.llm_seed)
+        sha = DiskCache.key(model, prompt, params)
+
+        hit = self.cache.get(sha)
+        if hit is not None:
+            self.ledger.record_cached("ollama", model, LOCAL_KEY, ladder, purpose, sha)
+            return Completion(hit, self._parse(hit, schema), "ollama", model,
+                              LOCAL_KEY, ladder, True, 0)
+
+        row_id = self.ledger.try_acquire(
+            model, LOCAL_KEY, rpm=UNLIMITED, rpd=UNLIMITED,
+            purpose=f"{purpose}:local", prompt_sha=sha, provider="ollama",
+            ladder=ladder,
+        )
+        assert row_id is not None
+        return self._invoke(
+            provider_obj=self.ollama, provider_name="ollama", model=model,
+            api_key=None, timeout_s=self.cfg.ollama_timeout_s, prompt=prompt,
+            schema=schema, sha=sha, row_id=row_id, key_alias=LOCAL_KEY,
+            ladder=ladder, purpose=purpose, rpm=UNLIMITED, rpd=UNLIMITED,
+        )
 
     def _complete_ollama(
         self, prompt: str, purpose: str, ladder: Ladder,
@@ -474,37 +641,103 @@ class LLMClient:
         self, prompt: str, purpose: str, ladder: Ladder,
         schema: dict[str, Any] | None, params: dict[str, Any] | None,
     ) -> Completion:
-        rungs: tuple[Rung, ...] = self.cfg.ladder(ladder)
+        """Walk the ladder, then -- for synthesis only -- walk the other one.
+
+        The fallback is deliberately ONE-DIRECTIONAL.
+
+        Synthesis exhausted -> use volume models. The answer gets worse; the agent
+        keeps working. That is "answer quality degrades last" taken to its conclusion:
+        a weaker cited answer beats no answer.
+
+        Volume exhausted -> NEVER use synthesis models. Judging and condensing on
+        reasoning quota is precisely the failure the two-ladder split exists to
+        prevent -- four turns would drain the budget and the failure would land on
+        answer generation, the one thing a reviewer sees. Volume work fails instead.
+        """
         if not self.api_keys:
             raise QuotaExhausted(ladder, [])
 
+        try:
+            return self._walk_ladder(self.cfg.ladder(ladder), prompt, purpose,
+                                     ladder, schema, params)
+        except QuotaExhausted:
+            if not (ladder == "synthesis" and self.cfg.synthesis_falls_back_to_volume):
+                raise
+            self.degraded_calls += 1
+            # Purpose records the degradation so the ledger shows it plainly rather
+            # than an unexplained volume-model synthesis appearing in the counts.
+            return self._walk_ladder(
+                self.cfg.ladder("volume"), prompt, f"{purpose}:degraded",
+                "volume", schema, params,
+            )
+
+    def _walk_ladder(
+        self, rungs: tuple[Rung, ...], prompt: str, purpose: str, ladder: Ladder,
+        schema: dict[str, Any] | None, params: dict[str, Any] | None,
+    ) -> Completion:
         tried: list[tuple[str, str]] = []
+        transient: list[str] = []
+        rate_limited: list[str] = []
+        # One token is roughly four characters of English; the completion is bounded
+        # by the schema and small next to the prompt.
+        est_tokens = len(prompt) // 4 + 512
+
         for rung in rungs:
+            if rung.is_local:
+                # The floor of the ladder. No key, no quota, no rotation -- if this
+                # fails there is nothing below it, so the error is the real one.
+                try:
+                    return self._complete_local(rung.model, prompt, purpose, ladder,
+                                                schema, params)
+                except Exception as exc:
+                    raise QuotaExhausted(ladder, tried) from exc
+
             sha = DiskCache.key(rung.model, prompt, params)
             hit = self.cache.get(sha)
             if hit is not None:
                 alias = next(iter(self.api_keys))
-                self.ledger.record_cached("gemini", rung.model, alias, ladder, purpose, sha)
+                self.ledger.record_cached("gemini", rung.model, alias, ladder,
+                                          purpose, sha)
                 return Completion(hit, self._parse(hit, schema), "gemini", rung.model,
                                   alias, ladder, True, 0)
 
             # Drain every key on this rung before stepping down. Stepping down while
-            # another key still has quota on the current rung would throw away
-            # capability for no reason.
+            # another key still has quota throws away capability for nothing.
             for alias, api_key in self.api_keys.items():
+                if alias in self.disabled_keys:
+                    continue
                 tried.append((rung.model, alias))
                 row_id = self.ledger.try_acquire(
-                    rung.model, alias, rung.rpm, rung.rpd, purpose,
-                    sha, "gemini", ladder,
+                    rung.model, alias, rung.rpm, rung.rpd, purpose, sha, "gemini",
+                    ladder, tpm=rung.tpm, est_tokens=est_tokens,
                 )
                 if row_id is None:
-                    continue  # saturated -- next key, without sleeping
-                return self._invoke(
-                    provider_obj=self.gemini, provider_name="gemini", model=rung.model,
-                    api_key=api_key, timeout_s=self.cfg.gemini_timeout_s, prompt=prompt,
-                    schema=schema, sha=sha, row_id=row_id, key_alias=alias, ladder=ladder,
-                    purpose=purpose, rpm=rung.rpm, rpd=rung.rpd,
-                )
+                    continue  # saturated on some limit -- next key, without sleeping
+                try:
+                    return self._invoke(
+                        provider_obj=self.gemini, provider_name="gemini",
+                        model=rung.model, api_key=api_key,
+                        timeout_s=self.cfg.gemini_timeout_s, prompt=prompt,
+                        schema=schema, sha=sha, row_id=row_id, key_alias=alias,
+                        ladder=ladder, purpose=purpose, rpm=rung.rpm, rpd=rung.rpd,
+                    )
+                except KeyRejected as exc:
+                    self.disabled_keys[alias] = str(exc)
+                    continue
+                except Exception as exc:
+                    if is_rate_limited(exc):
+                        rate_limited.append(f"{rung.model}/{alias}")
+                        continue
+                    if is_transient_error(exc):
+                        transient.append(f"{rung.model}/{alias}: {exc}")
+                        continue
+                    raise
+
+        if transient and len(transient) == len(tried):
+            raise RuntimeError(
+                f"Every {ladder} attempt failed with a transient network error, so no "
+                f"quota conclusion can be drawn: {transient[:3]}"
+            )
         raise QuotaExhausted(ladder, tried)
 
     def _invoke(
@@ -550,12 +783,14 @@ class LLMClient:
                 )
                 continue
             except Exception as exc:
-                # Transport, timeout, auth: the attempt still consumed a slot, and
-                # the caller needs the real error rather than a retry loop.
+                # The attempt still consumed a slot, so it is recorded either way.
                 self.ledger.finish(
                     current_row, ok=False,
                     latency_ms=int((self.monotonic() - started) * 1000), error=str(exc),
                 )
+                if is_permanent_key_error(exc):
+                    raise KeyRejected(
+                        f"{key_alias} was refused permanently: {exc}") from exc
                 raise
 
             latency_ms = int((self.monotonic() - started) * 1000)
@@ -569,6 +804,26 @@ class LLMClient:
             f"{model} returned unparseable JSON on {attempts} attempt(s). "
             f"Last error: {last_error}"
         )
+
+    def live_models(self) -> set[str]:
+        """Model ids the API reports as usable, for one key. No generation quota.
+
+        `ListModels` is free. The ladders are hand-maintained data copied from
+        published limits, and a stale entry only reveals itself at the moment real
+        quota is being spent -- which is the worst possible time. Checking costs one
+        metadata call.
+        """
+        if not self.api_keys:
+            return set()
+        from google import genai
+
+        client = genai.Client(api_key=next(iter(self.api_keys.values())))
+        out: set[str] = set()
+        for m in client.models.list():
+            actions = getattr(m, "supported_actions", None) or []
+            if not actions or "generateContent" in actions:
+                out.add(m.name.replace("models/", ""))
+        return out
 
     def warmup(self) -> bool:
         """Make one throwaway local call before any measurement.
@@ -595,8 +850,16 @@ class LLMClient:
         aliases = list(self.api_keys) or ["(no key configured)"]
         for ladder_name in ("synthesis", "volume"):
             for rung in self.cfg.ladder(ladder_name):  # type: ignore[arg-type]
+                if rung.is_local:
+                    out.append({"ladder": ladder_name, "model": rung.model,
+                                "key": "local", "rpm_used": 0, "rpm_limit": 0,
+                                "rpm_left": 0, "rpd_used": 0, "rpd_limit": 0,
+                                "rpd_left": 0, "tpm_used": 0, "tpm_limit": 0,
+                                "tpm_left": 0, "local": True})
+                    continue
                 for alias in aliases:
                     row = {"ladder": ladder_name, "model": rung.model, "key": alias}
-                    row.update(self.ledger.remaining(rung.model, alias, rung.rpm, rung.rpd))
+                    row.update(self.ledger.remaining(rung.model, alias, rung.rpm,
+                                                     rung.rpd, rung.tpm))
                     out.append(row)
         return out

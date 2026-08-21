@@ -2,13 +2,13 @@
 
 **The sources do not contain an answer to this question.**
 
-The provided citations (p_qlora_0003, p_react_0000, p_lora_0008) do not mention GPT-4 or its training cost.
+top rerank 0.704 < tau_low 0.736: nothing in the corpus is a strong enough match to answer from
 
 _No citations are given, because there is nothing in the corpus to cite. This is the intended behaviour, not a failure._
 
 ---
 
-- Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
-- Passages in context: 3
-- Top rerank score: 0.9803
+- Route: `refuse`
+- Top rerank score: 0.7038
+- Retrieval loops: 2
+- Latency: 6655 ms

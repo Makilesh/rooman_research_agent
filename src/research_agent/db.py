@@ -184,6 +184,10 @@ _MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "llm_calls", """
         CREATE TABLE IF NOT EXISTS llm_calls (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            -- Timezone-aware ISO-8601, NOT SQLite's datetime() format. Compare it
+            -- with db.iso_cutoff(), never with datetime('now', ...): the 'T'
+            -- separator sorts after a space, so a mixed comparison matches
+            -- everything.
             ts                TEXT NOT NULL,
             provider          TEXT NOT NULL,
             model             TEXT NOT NULL,
@@ -337,6 +341,25 @@ def insert_many(conn: sqlite3.Connection, table: str, rows: Iterable[dict[str, A
         [tuple(r[c] for c in cols) for r in rows],
     )
     return len(rows)
+
+
+def iso_cutoff(minutes: float = 0, hours: float = 0) -> str:
+    """A timestamp string comparable against `llm_calls.ts`.
+
+    `llm_calls.ts` is written as timezone-aware ISO-8601 (`2026-08-20T18:21:00+00:00`)
+    while every other table's `created_at` uses SQLite's `datetime('now')`
+    (`2026-08-20 18:21:00`). The two are compared as strings, and `T` sorts after a
+    space, so `ts >= datetime('now','-5 minutes')` silently matches EVERY row rather
+    than the recent ones.
+
+    The limiter is unaffected -- it compares ISO to ISO throughout. Ad-hoc queries are
+    the hazard, and this helper exists because that trap caught me twice while
+    diagnosing a live run, both times making a healthy system look broken.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc)
+            - timedelta(minutes=minutes, hours=hours)).isoformat()
 
 
 def get_state(conn: sqlite3.Connection, key: str) -> str | None:

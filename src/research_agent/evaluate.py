@@ -361,6 +361,30 @@ def _conversation_turn_ones(cfg: Config) -> list[GoldItem]:
 # ---------------------------------------------------------------------------
 #  Generation-dependent metrics
 # ---------------------------------------------------------------------------
+def drop_caches(cfg, conn) -> tuple[int, int]:
+    """Empty both cache layers and report what was discarded.
+
+    There are two, and clearing only one produces numbers that look measured and
+    are not. `answer_cache` short-circuits a whole turn; the `DiskCache` under
+    `.cache/llm` short-circuits an individual LLM call on sha256(model+prompt).
+    An eval that cleared only the first still served 557 of 1520 calls from disk
+    at a recorded 0 ms, so committed transcripts reported `Latency: 0 ms` for
+    turns that genuinely cost seconds -- a figure describing the cache's history
+    rather than the pipeline's behaviour.
+    """
+    import shutil
+
+    n_answers = conn.execute("SELECT COUNT(*) FROM answer_cache").fetchone()[0]
+    conn.execute("DELETE FROM answer_cache")
+    conn.commit()
+
+    root = cfg.llm_cache_dir
+    n_prompts = sum(1 for _ in root.rglob("*.json")) if root.exists() else 0
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    return n_answers, n_prompts
+
+
 @dataclass
 class GenerationMetrics:
     """Everything that needs a model to produce. Labelled as such everywhere.
@@ -370,6 +394,13 @@ class GenerationMetrics:
     whichever model served the run. Mixing them in one table would let a synthesis
     model's variance masquerade as a retrieval result.
     """
+
+    # Which model actually served this run. The report used to print
+    # `cfg.ollama_model` unconditionally, so a Gemini run produced a file headed
+    # "Generation: llama3.1:8b via Ollama" over Gemini's numbers -- the one
+    # artifact a reviewer cross-references against the README contradicted it.
+    provider: str = ""
+    model: str = ""
 
     n_items: int = 0
     schema_valid: int = 0
@@ -420,12 +451,24 @@ class GenerationMetrics:
         return out
 
 
-def _route_ok(expected: str, actual: str) -> bool:
+def route_ok(expected: str, actual: str) -> bool:
     """Refusing on score and abstaining after synthesis are different mechanisms with
-    the same correct outcome: no answer, no citations."""
+    the same correct outcome: no answer, no citations.
+
+    Public, and the single definition of a correct route. `chat-eval` used to carry
+    its own inline `expected == actual` instead, so the same 13 turns scored 9/13
+    there and 10/13 here -- and the README quoted the friendlier one while the
+    committed artifact recorded the stricter. The turn they disagreed on was a
+    scenario that expected a refusal and got an abstention: no answer and no
+    citations either way, which is the outcome the scenario is testing for.
+    """
     if expected in {"refuse", "abstain"}:
         return actual in {"refuse", "abstain"}
     return expected == actual
+
+
+# Kept so existing call sites keep working; new code should use `route_ok`.
+_route_ok = route_ok
 
 
 def fact_coverage(answer, expected_facts: Sequence[str]) -> float:
