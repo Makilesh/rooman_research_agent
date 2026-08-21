@@ -16,13 +16,13 @@ verified without spending a token. Runs on a local model with **no API key at al
 |---|---|
 | **Invented citations, across every run** | **0** — structurally impossible, not luck |
 | **Abstention accuracy** | **4/4** on unanswerable controls |
-| **Citation precision** | 0.882 local · **0.952–1.000** Gemini (2 runs) |
+| **Citation precision** | 0.875 local · **1.000** Gemini |
 | **Condensation drift rate** | **0/13** — the target was 0 |
 | **Rate-limit rejections, run 1 (607 billed calls)** | **0** |
 | **Daily answer capacity, 4 keys** | 4,480 API calls, then an **unlimited local floor** |
 | Recall@5 — hybrid + rerank *(LLM-free)* | **0.646**, up from 0.479 single-retriever |
-| Tests | 164, no network, no model downloads |
-| Design decisions logged | 78, each with evidence |
+| Tests | 171, no network, no model downloads |
+| Design decisions logged | 86, each with evidence |
 
 **What is deliberately *not* claimed:** multi-hop synthesis. Measured at 1.00 papers
 per multi-hop answer on **both** providers — see [§12](#12--limitations).
@@ -121,7 +121,7 @@ research-agent ask "What rank does LoRA use in its GPT-3 175B experiments, and w
 | ↳ of which process start + loading both encoders | ~30 s |
 | ↳ of which the turn itself | ~15 s |
 
-The 14.6 s p50 in [§8](#8--evaluation) is *in-process turn* latency, measured inside
+The 15.0 s p50 in [§8](#8--evaluation) is *in-process turn* latency, measured inside
 the evaluation loop where the encoders load once and serve every question. It is not
 what a single command costs. `chat` pays the load once, then answers at the p50 rate.
 
@@ -388,16 +388,48 @@ same correct outcome.
 
 <br>
 
+Measured on the **local** path, whose transcripts are the unsuffixed files in
+`outputs/conversations/`. The Gemini run of the same scenarios sits beside them as
+`*.gemini.md`.
+
 | Gate | Outcome |
 |---|---|
-| **C** — abstain mid-conversation after two confident turns | **passed** |
+| **A** — resolve "the quantised version" without the user saying QLoRA | **passed, all 4 turns** |
+| **C** — abstain mid-conversation after two confident turns | **passed on the abstention**, missed turn 1 |
 | **D** — ordinal source reference resolves via `turn_citations` | **passed in mechanism** |
-| **A** — resolve "the quantised version" without the user saying QLoRA | **partial** — the pronoun resolved; the cross-paper hop did not |
-| **B** — clarify then resolve | **failed on turn 1** |
+| **B** — clarify then resolve | **failed on turn 1**, on both providers |
 
-B is the interesting failure. *"What rank is used?"* scored 0.188 and was refused
-rather than clarified. The finding underneath is more useful than the failure:
-**a vague query and an unanswerable query are indistinguishable to a relevance score.**
+**A passes end to end.** Turn 2 asks *"How does the quantised version reduce memory
+further?"* — the corpus word QLoRA never appears in the conversation — and retrieval
+returns QLoRA passages (`p_qlora_0003`, `p_qlora_0000`). Turn 3's *"What does it report
+for a 65B model?"* condenses to *"What does **QLORA** report for a 65B parameter
+model?"*: the referent is named explicitly, unprompted, and the drift guard passes
+because QLoRA entered the vocabulary through the retrieved sources.
+
+**D behaves correctly by declining.** Turn 1's answer cited one source, so *"expand on
+the second source"* refers to something that does not exist. The `turn_citations`
+lookup ran, found one row, and the agent asked which source was meant rather than
+inventing a second. The mechanism is exercised; the scenario just never reaches the
+resolution branch, because a two-source turn 1 is what would trigger it.
+
+**B is the interesting failure, and it fails differently on each provider.** The turn-1
+query *"What rank is used?"* is vague — rank of what, in which paper. Turn 1 skips
+condensation, so both providers see byte-identical text, and they land at opposite ends
+of the score range:
+
+| | route | top score |
+|---|---|---:|
+| Local | **answer** | 0.966 |
+| Gemini | **refuse** | 0.188 |
+
+Neither clarified. Ollama's judge called the first retrieval insufficient and the loop
+rewrote twice, lifting the score to 0.966; Gemini's accepted it and the router refused
+at 0.188. The finding underneath is more useful than either failure: **a vague query
+and an unanswerable query are indistinguishable to a relevance score.** Ambiguity is
+not a point on the relevance axis, so a threshold over that axis cannot detect it — it
+can only be confidently wrong in one direction or the other. Detecting it needs a
+different signal entirely, such as whether the top hits disagree about which document
+they come from.
 
 Transcripts: [`outputs/conversations/`](outputs/conversations/).
 
@@ -456,48 +488,67 @@ resulting numbers still look plausible.
 |---|---:|:---:|
 | Recall@5 (hybrid + rerank) | 0.646 | **no** |
 | Measured thresholds | [§5](#measured-thresholds) | **no** |
-| Citation precision | 0.882 | yes |
+| Citation precision | 0.875 | yes |
 | **Abstention accuracy** | **1.000 (4/4)** | yes |
 | **Invented citation ids** | **0** | yes |
 | **Refusals carrying citations** | **0** | yes |
-| Fact coverage (mean) | 0.660 | yes |
+| Fact coverage (mean) | 0.624 | yes |
 | Route accuracy — single-turn | 0.917 (11/12) | yes |
 | Route accuracy — conversational | 10/13 | yes |
 | **Condensation drift rate** | **0/13** | yes |
 | Papers per multi-hop answer | 1.00 | yes |
-| p50 / p95 turn latency | 14.6 s / 18.6 s | yes |
+| p50 / p95 turn latency | 15.0 s / 17.8 s | yes |
 
 **Reproducible.** Generation runs greedily with a fixed seed and one discarded warm-up
 call — measured on this machine, the *first* call after a model load returns different
-text from every subsequent identical call, which then agree 6/6. **Two full runs with
-the cache cleared produce identical reports apart from wall-clock latency.**
+text from every subsequent identical call, which then agree 6/6. **Two full runs with both caches cleared produce byte-identical
+condensations, rewritten queries, loop counts, rerank scores and routes across all 13
+conversation turns** — verified by diffing the two runs' records field by field, not
+by eye.
 
 Full report with per-question rows, histograms and a traceability table mapping every
 number to its source: [`outputs/eval_report.md`](outputs/eval_report.md).
 
 ### Provider comparison
 
-Identical corpus, thresholds and retrieval; only the generator changed.
+Identical corpus, thresholds and retrieval; only the generator changed. Both columns
+below are one cold-cache run each on the **current** revision, regenerated together so
+they are comparable to each other and to the files in `outputs/`.
 
-Gemini was run **three times**, independently, so the spread is visible rather than a
-single observation presented as a point estimate.
-
-| Metric | Local | Gemini ×3 |
+| Metric | Local `llama3.1:8b` | Gemini |
 |---|---:|---:|
-| Route accuracy, single-turn | 0.917 | **1.000 · 1.000 · 1.000** |
-| Citation precision | 0.882 | **1.000 · 0.952 · 1.000** |
-| Fact coverage | 0.660 | **0.881 · 0.850 · 0.881** |
-| Abstention accuracy | 1.000 | 1.000 · 1.000 · 1.000 |
-| Invented citations | 0 | 0 · 0 · 0 |
-| Condensation drift | 0/13 | 0/13 · 0/13 · 0/13 |
-| Papers per multi-hop answer | 1.00 | 1.00 · 1.00 · 1.00 |
-| Route accuracy, conversational | **10/13** | 7/13 · 8/13 · 7/13 |
-| Recall@5 *(LLM-free)* | 0.646 | 0.646 · 0.646 · 0.646 |
+| Route accuracy, single-turn | 0.917 | **1.000** |
+| Citation precision | 0.875 | **1.000** |
+| Fact coverage | 0.624 | **0.850** |
+| Abstention accuracy | 1.000 | 1.000 |
+| Invented citations | 0 | 0 |
+| Condensation drift | 0/13 | 0/13 |
+| Papers per multi-hop answer | 1.00 | 1.00 |
+| Route accuracy, conversational | **10/13** | 9/13 |
+| p50 / p95 turn latency | **15.0 s / 17.8 s** | 17.4 s / 40.6 s |
+| Recall@5 *(LLM-free)* | 0.646 | 0.646 |
 
-**Single-turn route accuracy of 1.000 reproduced all three times**, as did 4/4
-abstention, zero invented citations and zero drift. Gemini wins every single-turn
-metric and loses the conversational one — consistently enough, across three runs, that
-neither result is noise.
+Reports: [`eval_report.md`](outputs/eval_report.md) ·
+[`eval_report.gemini.md`](outputs/eval_report.gemini.md). Each names the provider that
+produced it in its own header, so neither can be mistaken for the other.
+
+**Gemini's single-turn route accuracy of 1.000 has now reproduced on four independent
+runs** — this one plus three on an earlier revision — as have 4/4 abstention, zero
+invented citations and zero drift. Those three earlier runs are not tabulated here:
+they predate the two-ladder routing change and the provider timeout fix, and quoting
+them beside current numbers would be the same stale-figure problem described in
+[§10](#10--design-decisions).
+
+**Gemini wins every single-turn metric and loses the conversational one.** The
+mechanism is [§6](#6--conversation): its sufficiency judge accepts the first retrieval
+more often, which denies the router a rewritten query. Ollama fired 15 retrieval loops
+across the 13 turns to Gemini's 8.
+
+**Gemini's p95 is 2.3× its p50** where the local model's is 1.2×. That tail is the
+fallback ladder doing its job under a degraded service — `gemini-3.7-flash` returned
+`503 UNAVAILABLE` throughout this run and only 33 of 129 calls to it succeeded, so
+requests walked down to `gemini-3.6-flash` and `gemini-3.5-flash-lite`. A local model
+has no tail because it has no queue and no quota.
 
 The retrieval row is identical **by construction** — which is exactly why it is
 measured separately. Only generation columns move with the model.
@@ -515,26 +566,24 @@ context construction.
 > condensation quality. Instrumenting the query retrieval *actually ran on* — not just
 > the condensation — showed the real mechanism.
 >
-> The turns where **both** providers fired **zero** retrieval loops score identically,
-> as they must, since retrieval is a local encoder over a local index:
+> **The control.** Turn 1 skips condensation, so both providers retrieve on the
+> byte-identical user question. On **D t1**, where neither provider's judge asked for
+> a second retrieval, the scores are exactly equal — 0.9891 and 0.9891 — as they must
+> be, since retrieval is a local encoder over a local index.
 >
-> | turn | Ollama | Gemini |
-> |---|---:|---:|
-> | D t1 | 0.9891 | 0.9891 |
-> | D t2 | 0.000 | 0.000 |
-> | D t3 | 0.8404 | 0.8336 |
->
-> Every divergence tracks the **loop count** instead — Ollama fired 15, Gemini 10:
+> **A t1 is the same setup and diverges completely:**
 >
 > | turn | ollama loops / top | gemini loops / top | routes |
 > |---|---|---|---|
-> | A t1 | 1 / 0.9857 | 0 / 0.6837 | answer / **refuse** |
-> | B t1 | 2 / 0.9661 | 0 / 0.188 | answer / **refuse** |
+> | A t1 | **1** / 0.9857 | **0** / 0.6837 | answer / **refuse** |
+> | B t1 | **2** / 0.9661 | **0** / 0.188 | answer / **refuse** |
 >
-> A t1 is the cleanest case: turn 1 skips condensation, so both retrieve on the
-> byte-identical question. Ollama's judge called it *insufficient*, the loop rewrote
-> the query, and the score rose to 0.9857. Gemini's judge called the same evidence
-> *sufficient*, no rewrite happened, and the router refused the raw query on 0.6837.
+> On A t1 Ollama's judge called the first retrieval *insufficient*, the loop rewrote
+> the query to *"What problem does LoRA solve for large language models' adaptation to
+> downstream tasks?"*, and the score rose to 0.9857. Gemini's judge called the same
+> evidence *sufficient*, no rewrite happened, and the router refused the raw query on
+> 0.6837 — below `tau_low`. Across the 13 turns Ollama fired **15** retrieval loops to
+> Gemini's **8**.
 >
 > **The finding is architectural, not about either model.** The judge and the router
 > are two gates asking overlapping questions, and the judge runs first. A judge that
@@ -543,6 +592,11 @@ context construction.
 > Gemini's is better calibrated and the pipeline is worse for it. The fix is to let the
 > router see the best score across iterations, or to invert the gate order — not to
 > tune a judge against a 13-turn set.
+>
+> *Not claimed:* that every zero-loop turn matches across providers. Only turn 1 skips
+> condensation; elsewhere the condensed text itself differs, so C t2 (0.9511 vs 0.9925)
+> and D t3 (0.8404 vs 0.8459) move slightly even at zero loops. The turn-1 pair is the
+> only clean control, and it is the one that isolates the judge.
 >
 > `research-agent condensation-diff` prints the rewrites side by side.
 
