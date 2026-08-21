@@ -1,6 +1,6 @@
 # B_clarify_then_resolve — Ambiguous question -> clarify -> resolve
 
-Session `s_d87d9ab730a6` · corpus `e62c6925a03ad297`
+Session `s_201302545725` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -22,7 +22,7 @@ Low Rank Adapters (LoRA) are used.[^1] We add a small set of learnable Low-rank 
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 4796 ms
 - Passages in context: 3
 - Top rerank score: 0.9661
 - Sentence verification: verified 2
@@ -48,7 +48,7 @@ We focus our study on GPT-3 175B, where we achieved the largest reduction of tra
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 5655 ms
 - Passages in context: 3
 - Top rerank score: 0.9586
 - Sentence verification: verified 2
@@ -75,7 +75,7 @@ Compared to GPT-3 175B fine-tuned with Adam, LoRA can reduce the number of train
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 5515 ms
 - Passages in context: 2
 - Top rerank score: 0.9445
 - Sentence verification: verified 2

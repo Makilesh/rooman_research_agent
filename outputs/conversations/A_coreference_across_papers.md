@@ -1,6 +1,6 @@
 # A_coreference_across_papers — Coreference across papers (LoRA -> QLoRA without naming it)
 
-Session `s_b6b0c5f5401e` · corpus `e62c6925a03ad297`
+Session `s_ee7d7c42aead` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -22,7 +22,7 @@ Fine-tuning enormous language models is prohibitively expensive in terms of the 
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 5453 ms
 - Passages in context: 3
 - Top rerank score: 0.9857
 - Sentence verification: verified 2
@@ -49,7 +49,7 @@ Double Quantization helps reduce the memory footprint of quantization constants.
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 7811 ms
 - Passages in context: 3
 - Top rerank score: 0.8213
 - Sentence verification: verified 3
@@ -76,7 +76,7 @@ QLORA reduces the average memory requirements of finetuning a 65B parameter mode
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 9375 ms
 - Passages in context: 3
 - Top rerank score: 0.9569
 - Sentence verification: verified 3
@@ -102,7 +102,7 @@ QLoRA has one storage data type (usually 4-bit NormalFloat) and a computation da
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 5609 ms
 - Passages in context: 3
 - Top rerank score: 0.9898
 - Sentence verification: verified 2
