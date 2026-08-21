@@ -1146,6 +1146,17 @@ def chat_eval(
                 "novel": sorted(result.condensed.novel_words),
                 "missing": missing, "leaked": leaked,
                 "refs": result.resolved_refs,
+                # The rewrite itself. Drift rate says whether a rewrite invented a
+                # word; it says nothing about whether the rewrite is a good query.
+                # Those are different properties, and only the text shows the second.
+                "raw": raw,
+                "condensed": result.condensed.query,
+                "final_query": result.final_query,
+                "loops": result.n_loops,
+                "used_llm": result.condensed.used_llm,
+                "reason": result.condensed.reason,
+                "top_score": round(result.route.top_score, 4),
+                "route_reason": result.route.reason,
             })
 
             lines += [f"## Turn {i}", "", f"**User:** {raw}", ""]
@@ -1196,6 +1207,16 @@ def chat_eval(
                   f"  (target 0)")
     console.print(f"  transcripts               outputs/conversations/ "
                   f"({len(transcripts)} files)")
+
+    # A machine-diffable record of every rewrite, keyed by scenario+turn, so two
+    # providers can be compared on identical history rather than by eye.
+    import json as _json
+
+    tag = (provider or cfg.provider)
+    path = out_dir / f"_condensation.{tag}.json"
+    path.write_text(_json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
+    _ok(f"wrote {path.relative_to(cfg.repo_root)}",
+        "condensed queries, per turn, for cross-provider diffing")
 
 
 @app.command("eval")
@@ -1374,6 +1395,70 @@ def ui(
     subprocess.run([_sys.executable, "-m", "streamlit", "run", str(target),
                     "--server.port", str(port),
                     "--server.headless", "true"], check=False)
+
+
+@app.command("condensation-diff")
+def condensation_diff(
+    left: str = typer.Option("ollama", "--left", help="First provider tag."),
+    right: str = typer.Option("gemini", "--right", help="Second provider tag."),
+) -> None:
+    """Diff two providers' query rewrites on identical conversation history.
+
+    Drift rate answers "did the rewrite invent a word". It cannot answer "is the
+    rewrite a good query", and a clean drift rate is not evidence for both. This
+    prints the rewrites side by side so the second question has an answer too.
+    """
+    import json as _json
+
+    cfg = Config.load()
+    out_dir = cfg.outputs_dir / "conversations"
+    paths = {tag: out_dir / f"_condensation.{tag}.json" for tag in (left, right)}
+    for tag, path in paths.items():
+        if not path.exists():
+            _fail(f"no record for {tag}", f"run: research-agent chat-eval --provider {tag}")
+            raise typer.Exit(1)
+
+    data = {tag: {(r["scenario"], r["turn"]): r
+                  for r in _json.loads(p.read_text(encoding="utf-8"))}
+            for tag, p in paths.items()}
+    keys = sorted(set(data[left]) | set(data[right]))
+
+    diverged = 0
+    for key in keys:
+        a, b = data[left].get(key), data[right].get(key)
+        if a is None or b is None:
+            continue
+        same_route = a["actual"] == b["actual"]
+        same_text = a["condensed"].strip().lower() == b["condensed"].strip().lower()
+        if same_route and same_text:
+            continue
+        diverged += 1
+        console.rule(f"[bold cyan]{key[0]} · turn {key[1]}")
+        console.print(f"[dim]user:[/dim] {a['raw']}", markup=False)
+        if not a["used_llm"]:
+            console.print(f"[dim]  (condensation skipped — {a['reason']})[/dim]")
+        for tag, row in ((left, a), (right, b)):
+            mark = "" if row["actual"] == row["expected"] else "  <-- MISMATCH"
+            console.print(f"\n  [bold]{tag}[/bold]  route={row['actual']}"
+                          f" (expected {row['expected']}) top={row['top_score']}{mark}")
+            console.print(f"    condensed : {row['condensed']}", markup=False)
+            final = row.get("final_query", "")
+            if final and final.strip().lower() != row["condensed"].strip().lower():
+                console.print(f"    [yellow]loop rewrote to[/yellow] "
+                              f"({row.get('loops', 0)} loop(s)): {final}", markup=False)
+            if row["drifted"]:
+                console.print(f"    [red]drift:[/red] {row['novel']}")
+        console.print()
+
+    console.rule()
+    for tag in (left, right):
+        rows = list(data[tag].values())
+        correct = sum(1 for r in rows if r["match"])
+        drift = sum(1 for r in rows if r["drifted"])
+        console.print(f"  {tag:<8} route {correct}/{len(rows)} · drift {drift}/{len(rows)}")
+    console.print(f"\n  {diverged}/{len(keys)} turns differ in rewrite or route.")
+    console.print("[dim]  Identical drift rates with different routes means the guard "
+                  "passed both, and only one rewrite was a usable query.[/dim]")
 
 
 @app.command("db")

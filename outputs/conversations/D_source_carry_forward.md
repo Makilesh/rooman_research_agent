@@ -1,6 +1,6 @@
 # D_source_carry_forward — Referring to a previous answer's source by position
 
-Session `s_5dd8ddda0a9d` · corpus `e62c6925a03ad297`
+Session `s_f6c8774d7d96` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -12,7 +12,7 @@ Session `s_5dd8ddda0a9d` · corpus `e62c6925a03ad297`
 
 # How does RAG combine retrieval with generation?
 
-We combine these components in a probabilistic model trained end-to-end (Fig. 1).[^1] The retriever (Dense Passage Retriever [26], henceforth DPR) provides latent documents conditioned on the input, and the seq2seq model (BART [32]) then conditions on these latent documents together with the input to generate the output.[^1] We marginalize the latent documents with a top-K approximation, either on a per-output basis (assuming the same document is responsible for all tokens) or a per-token basis (where different documents are responsible for different tokens).[^1]
+RAG combines parametric memory from a pre-trained sequence-to-sequence transformer (BART) with non-parametric memory from a dense vector index of Wikipedia accessed via a neural retriever (DPR) in an end-to-end trained probabilistic model.[^1] For an input query, the retriever uses Maximum Inner Product Search (MIPS) to identify the top-K latent documents.[^1] The seq2seq generator then conditions on these retrieved latent documents together with the input query to generate the output.[^1] Finally, RAG marginalizes over the latent documents using a top-K approximation, either on a per-output basis where the same document conditions the whole sequence, or on a per-token basis where different documents can condition different tokens.[^1]
 
 ## Sources
 
@@ -20,11 +20,11 @@ We combine these components in a probabilistic model trained end-to-end (Fig. 1)
 
 ---
 
-- Provider: `ollama` · model: `llama3.1:8b`
+- Provider: `gemini` · model: `gemini-3.6-flash`
 - Latency: 0 ms
 - Passages in context: 2
 - Top rerank score: 0.9891
-- Sentence verification: verified 3
+- Sentence verification: verified 4
 
 
 ## Turn 2
@@ -41,14 +41,14 @@ We combine these components in a probabilistic model trained end-to-end (Fig. 1)
 
 **User:** Which paper was that from?
 
-*Condensed to:* `Which paper is the model in We marginalize the latent documents with a top-K approximation trained end-to-end (Fig. 1) from?`
+*Condensed to:* `Which paper was RAG combined retrieval with generation from?`
 *Drift guard:* passed — condensed within the conversation's vocabulary
 
-*Route:* `answer` (expected `answer`) — top rerank 0.983 >= tau_high 0.786
+*Route:* `answer` (expected `answer`) — top rerank 0.834 >= tau_high 0.786
 
-# Which paper is the model in We marginalize the latent documents with a top-K approximation trained end-to-end (Fig. 1) from?
+# Which paper was RAG combined retrieval with generation from?
 
-Our models leverage two components: (i) a retriever pη(z|x) with parameters η that returns (top-K truncated) distributions over text passages given a query x and (ii) a generator pθ(yi|x, z, y1:i−1) parametrized by θ that generates a current token based on a context of the previous i −1 tokens y1:i−1, the original input x and a retrieved passage z.[^1] The models we use are trained end-to-end as shown in Figure 1.[^1]
+Retrieval-Augmented Generation (RAG) is introduced in the paper 'Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks' by Patrick Lewis et al.[^1] It combines retrieval and generation by pairing a pre-trained neural retriever (Dense Passage Retriever, or DPR) with a pre-trained sequence-to-sequence model (BART) as the generator.[^1]
 
 ## Sources
 
@@ -56,9 +56,9 @@ Our models leverage two components: (i) a retriever pη(z|x) with parameters η 
 
 ---
 
-- Provider: `ollama` · model: `llama3.1:8b`
+- Provider: `gemini` · model: `gemini-3.6-flash`
 - Latency: 0 ms
 - Passages in context: 2
-- Top rerank score: 0.9826
+- Top rerank score: 0.8336
 - Sentence verification: verified 2
 

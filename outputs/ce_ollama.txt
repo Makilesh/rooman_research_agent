@@ -1,0 +1,376 @@
+─ A_coreference_across_papers — Coreference across papers (LoRA -> QLoRA wit… ─
+
+turn 1: What problem does LoRA solve?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : answer — top rerank 0.986 >= tau_high 0.786
+
+# What problem does LoRA solve?
+
+Fine-tuning enormous language models is prohibitively expensive in terms of the
+hardware required and the storage/switching cost for hosting independent 
+instances for different tasks.[^1] LoRA, an efficient adaptation strategy that 
+neither introduces inference latency nor reduces input sequence length while 
+retaining high model quality.[^2]
+
+## Sources
+
+[^1]: LoRA: Low-Rank Adaptation of Large Language Models · pp.1-3 — 
+`p_lora_0000`
+[^2]: LoRA: Low-Rank Adaptation of Large Language Models · pp.12-13 — 
+`p_lora_0008`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5625 ms
+- Passages in context: 3
+- Top rerank score: 0.9857
+- Sentence verification: verified 2
+
+
+turn 2: How does the quantised version reduce memory further?
+  raw       : How does the quantised version reduce memory further?
+  condensed : How does the quantised version reduce hardware cost and 
+storage/switching cost?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.821 >= tau_high 0.786
+
+# How does the quantised version reduce hardware cost and storage/switching 
+cost?
+
+Double Quantization helps reduce the memory footprint of quantization 
+constants.[^1] Double Quantization treats quantization constants cFP32 as 
+inputs to a second quantization, yielding the quantized quantization constants 
+cFP8 and reducing the average memory footprint per parameter from 0.5 bits to 
+0.127 bits.[^1] QLORA reduces the average memory requirements of finetuning a 
+65B parameter model from >780GB of GPU memory to <48GB without degrading the 
+runtime or predictive performance compared to a 16bit fully finetuned 
+baseline.[^2]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.5-6 — `p_qlora_0003`
+[^2]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 8125 ms
+- Passages in context: 3
+- Top rerank score: 0.8213
+- Sentence verification: verified 3
+
+
+turn 3: What does it report for a 65B model?
+  raw       : What does it report for a 65B model?
+  condensed : What does QLORA report for a 65B parameter model?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.957 >= tau_high 0.786
+
+# What does QLORA report for a 65B parameter model?
+
+QLORA reduces the average memory requirements of finetuning a 65B parameter 
+model from >780GB of GPU memory to <48GB without degrading the runtime or 
+predictive performance compared to a 16bit fully finetuned baseline.[^1] Using 
+QLORA, we train the Guanaco family of models, with the second best model 
+reaching 97.8% of the performance level of ChatGPT on the Vicuna [10] 
+benchmark, while being trainable in less than 12 hours on a single consumer 
+GPU;[^1] When deployed, our smallest Guanaco model (7B parameters) requires 
+just 5 GB of memory and outperforms a 26 GB Alpaca model by more than 20 
+percentage points on the Vicuna benchmark.[^2]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+[^2]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.9-10 — `p_qlora_0006`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 10172 ms
+- Passages in context: 3
+- Top rerank score: 0.9569
+- Sentence verification: verified 3
+
+
+turn 4: Does that cost quality?
+  raw       : Does that cost quality?
+  condensed : Does QLORA reduce quality?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.990 >= tau_high 0.786
+
+# Does QLORA reduce quality?
+
+QLoRA has one storage data type (usually 4-bit NormalFloat) and a computation 
+data type (16-bit BrainFloat).[^1] We have discussed how QLoRA works and how it
+can significantly reduce the required memory for finetuning models.[^1]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.5-6 — `p_qlora_0003`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5561 ms
+- Passages in context: 3
+- Top rerank score: 0.9898
+- Sentence verification: verified 2
+
+────── B_clarify_then_resolve — Ambiguous question -> clarify -> resolve ──────
+
+turn 1: What rank is used?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : answer — top rerank 0.966 >= tau_high 0.786
+
+# What rank is used?
+
+Low Rank Adapters (LoRA) are used.[^1] We add a small set of learnable Low-rank
+Adapter weights [28] that are tuned by backpropagating gradients through the 
+quantized weights.[^2]
+
+## Sources
+
+[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.3-5 — `p_qlora_0002`
+[^2]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 4952 ms
+- Passages in context: 3
+- Top rerank score: 0.9661
+- Sentence verification: verified 2
+
+
+turn 2: In LoRA, for GPT-3.
+  raw       : In LoRA, for GPT-3.
+  condensed : What rank is used in LoRA for GPT-3?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.959 >= tau_high 0.786
+
+# What rank is used in LoRA for GPT-3?
+
+We focus our study on GPT-3 175B, where we achieved the largest reduction of 
+trainable parameters (up to 10,000×) without adversely affecting task 
+performances.[^1] Given the empirical advantage of LoRA, we hope to further 
+explain the properties of the low-rank adaptation learned from downstream 
+tasks.[^1]
+
+## Sources
+
+[^1]: LoRA: Low-Rank Adaptation of Large Language Models · pp.9-10 — 
+`p_lora_0006`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5655 ms
+- Passages in context: 3
+- Top rerank score: 0.9586
+- Sentence verification: verified 2
+
+
+turn 3: How does that compare to full fine-tuning?
+  raw       : How does that compare to full fine-tuning?
+  condensed : How does LoRA for GPT-3 compare to full fine-tuning?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.944 >= tau_high 0.786
+
+# How does LoRA for GPT-3 compare to full fine-tuning?
+
+Compared to GPT-3 175B fine-tuned with Adam, LoRA can reduce the number of 
+trainable parameters by 10,000 times and the GPU memory requirement by 3 
+times.[^1] We observe a 25% speedup during training on GPT-3 175B compared to 
+full fine-tuning as we do not need to calculate the gradient for the vast 
+majority of the parameters.[^2]
+
+## Sources
+
+[^1]: LoRA: Low-Rank Adaptation of Large Language Models · pp.1-3 — 
+`p_lora_0000`
+[^2]: LoRA: Low-Rank Adaptation of Large Language Models · pp.4-5 — 
+`p_lora_0002`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5936 ms
+- Passages in context: 2
+- Top rerank score: 0.9445
+- Sentence verification: verified 2
+
+─ C_topic_shift_then_refusal — ReAct vs chain-of-thought, then a question th… ─
+
+turn 1: How does ReAct differ from chain-of-thought prompting?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : abstain — top rerank 1.000 >= tau_high 0.786
+
+# How does ReAct differ from chain-of-thought prompting?
+
+**The sources do not contain an answer to this question.**
+
+The passages do not mention ReAct at all.
+
+_No citations are given, because there is nothing in the corpus to cite. This 
+is the intended behaviour, not a failure._
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 2702 ms
+- Passages in context: 2
+- Top rerank score: 0.9996
+
+
+turn 2: What benchmarks does it use for that comparison?
+  raw       : What benchmarks does it use for that comparison?
+  condensed : What benchmarks does ReAct use for its comparison?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.951 >= tau_high 0.786
+
+# What benchmarks does ReAct use for its comparison?
+
+We conduct empirical evaluations of ReAct and state-of-the-art baselines on 
+four diverse benchmarks: question answering (HotPotQA, Yang et al., 2018), fact
+verification (Fever, Thorne et al., 2018), text-based game (ALFWorld, Shridhar 
+et al., 2020b), and webpage navigation (WebShop, Yao et al., 2022).[^1] For 
+HotPotQA and Fever, with access to a Wikipedia API that the model can interact 
+with, ReAct outperforms vanilla action generation models while being 
+competitive with chain-of-thought reasoning (CoT) (Wei et al., 2022).[^1] On 
+ALFWorld and WebShop, two or even one-shot ReAct prompting is able to 
+outperform imitation or reinforcement learning methods trained with 103 ∼105 
+task instances, with an absolute improvement of 34% and 10% in success rates 
+respectively.[^1]
+
+## Sources
+
+[^1]: ReAct: Synergizing Reasoning and Acting in Language Models · pp.2-3 — 
+`p_react_0002`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 9922 ms
+- Passages in context: 2
+- Top rerank score: 0.9511
+- Sentence verification: verified 3
+
+
+turn 3: What learning rate does it use for fine-tuning Llama 3?
+  raw       : What learning rate does it use for fine-tuning Llama 3?
+  condensed : What learning rate does ReAct use for fine-tuning Llama 3?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : abstain — top rerank 0.985 >= tau_high 0.786
+
+# What learning rate does ReAct use for fine-tuning Llama 3?
+
+**The sources do not contain an answer to this question.**
+
+The passages do not mention fine-tuning Llama 3 or specify a learning rate for 
+ReAct.
+
+_No citations are given, because there is nothing in the corpus to cite. This 
+is the intended behaviour, not a failure._
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 3329 ms
+- Passages in context: 3
+- Top rerank score: 0.9853
+
+─ D_source_carry_forward — Referring to a previous answer's source by positi… ─
+
+turn 1: How does RAG combine retrieval with generation?
+  condense  : skipped (turn 1 — nothing to condense)
+  route     : answer — top rerank 0.989 >= tau_high 0.786
+
+# How does RAG combine retrieval with generation?
+
+We combine a pre-trained retriever (Query Encoder + Document Index) with a 
+pre-trained seq2seq model (Generator) and fine-tune end-to-end.[^1] For query 
+x, we use Maximum Inner Product Search (MIPS) to find the top-K documents zi. 
+For final prediction y, we treat z as a latent variable and marginalize over 
+seq2seq predictions given different documents.[^1]
+
+## Sources
+
+[^1]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.1-2
+— `p_rag_0000`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5827 ms
+- Passages in context: 2
+- Top rerank score: 0.9891
+- Sentence verification: verified 2
+
+
+turn 2: Expand on the second source.
+  condense  : skipped (ordinal reference did not resolve)
+  route     : clarify — the previous answer cited 1 source(s), so 'the second 
+source' does not exist
+
+[yellow]You asked about the second source, but the previous answer cited 1 
+source. Which one did you mean?[/yellow]
+
+
+turn 3: Which paper was that from?
+  raw       : Which paper was that from?
+  condensed : Which paper was RAG combine retrieval with generation from?
+  drift     : ok — condensed within the conversation's vocabulary
+  route     : answer — top rerank 0.840 >= tau_high 0.786
+
+# Which paper was RAG combine retrieval with generation from?
+
+We endow pre-trained, parametric-memory generation models with a non-parametric
+memory through a general-purpose fine-tuning approach which we refer to as 
+retrieval-augmented generation (RAG).[^1] We build RAG models where the 
+parametric memory is a pre-trained seq2seq transformer, and the non-parametric 
+memory is a dense vector index of Wikipedia, accessed with a pre-trained neural
+retriever.[^2]
+
+## Sources
+
+[^1]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.1-2
+— `p_rag_0000`
+[^2]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.5-6
+— `p_rag_0003`
+
+---
+
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 5985 ms
+- Passages in context: 2
+- Top rerank score: 0.8404
+- Sentence verification: verified 2
+
+
+ scenario        │ turn │ expected │ actual          │ drift │ condensation    
+─────────────────┼──────┼──────────┼─────────────────┼───────┼─────────────────
+ A_coreference_… │ 1    │ answer   │ answer          │ -     │ ok              
+ A_coreference_… │ 2    │ answer   │ answer          │ -     │ missing         
+                 │      │          │                 │       │ ['LoRA']        
+ A_coreference_… │ 3    │ answer   │ answer          │ -     │ ok              
+ A_coreference_… │ 4    │ answer   │ answer          │ -     │ ok              
+ B_clarify_then… │ 1    │ clarify  │ answer  <--     │ -     │ ok              
+                 │      │          │ MISMATCH        │       │                 
+ B_clarify_then… │ 2    │ answer   │ answer          │ -     │ ok              
+ B_clarify_then… │ 3    │ answer   │ answer          │ -     │ ok              
+ C_topic_shift_… │ 1    │ answer   │ abstain  <--    │ -     │ ok              
+                 │      │          │ MISMATCH        │       │                 
+ C_topic_shift_… │ 2    │ answer   │ answer          │ -     │ ok              
+ C_topic_shift_… │ 3    │ refuse   │ abstain  <--    │ -     │ ok              
+                 │      │          │ MISMATCH        │       │                 
+ D_source_carry… │ 1    │ answer   │ answer          │ -     │ ok              
+ D_source_carry… │ 2    │ answer   │ clarify  <--    │ -     │ ok              
+                 │      │          │ MISMATCH        │       │                 
+ D_source_carry… │ 3    │ answer   │ answer          │ -     │ ok              
+
+  route accuracy            9/13
+  condensation drift rate   0/13  (target 0)
+  transcripts               outputs/conversations/ (4 files)
+  OK   wrote outputs\conversations\_condensation.ollama.json  condensed 
+queries, per turn, for cross-provider diffing

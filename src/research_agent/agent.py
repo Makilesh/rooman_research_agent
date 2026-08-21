@@ -39,6 +39,10 @@ class TurnResult:
     n_loops: int = 0
     sub_questions: list[str] = field(default_factory=list)
     exhausted: bool = False
+    # The query retrieval finally ran on. NOT the condensation: the
+    # sufficiency loop may rewrite it again afterwards, and it is this
+    # text that determines the rerank score the router sees.
+    final_query: str = ""
 
     @property
     def decision(self) -> str:
@@ -171,7 +175,7 @@ def run_turn(
                           question, options, refs, False,
                           int((time.monotonic() - started) * 1000),
                           loop_result.trace, loop_result.loops,
-                          loop_result.sub_questions)
+                          loop_result.sub_questions, False, loop_result.query)
 
     if route.decision == router_mod.REFUSE:
         _persist_refuse(conn, session_id, ord_ + 1, raw_text, condensed, route)
@@ -179,7 +183,7 @@ def run_turn(
                           [], refs, False,
                           int((time.monotonic() - started) * 1000),
                           loop_result.trace, loop_result.loops,
-                          loop_result.sub_questions)
+                          loop_result.sub_questions, False, loop_result.query)
 
     # -- answer ------------------------------------------------------------
     context = retrieve.fit_context_budget(
@@ -203,7 +207,7 @@ def run_turn(
     return TurnResult(session_id, ord_, raw_text, condensed, route, result, None,
                       [], refs, False, int((time.monotonic() - started) * 1000),
                       loop_result.trace, loop_result.loops,
-                      loop_result.sub_questions)
+                      loop_result.sub_questions, False, loop_result.query)
 
 
 # ---------------------------------------------------------------------------
