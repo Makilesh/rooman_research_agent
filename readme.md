@@ -828,6 +828,7 @@ Specific and honest. This list grows as measurement finds things; it does not sh
 | **Thresholds are tuned, not held out** | Fitted on the same questions the routing is scored against, so route accuracy is optimistic. The control population is **four questions** — `TAU_HIGH` is the least well-evidenced number here |
 | **Small evaluation set** | 8 answerable questions; every mean carries a bootstrap interval and they overlap |
 | **The sufficiency judge fires on every question** | Makes the loop an unconditional second pass — correct in outcome, roughly 3× the latency |
+| **The semantic cache is not keyed by provider** | A cached answer is reused across providers, so after running both, `ask` under `PROVIDER=ollama` can serve an answer Gemini produced. It is labelled honestly — the artifact names the provider and marks the turn a cache hit — and every evaluation clears both caches first, so no measurement is affected. A fresh clone has no cache and cannot hit it |
 | Other | Flat vector scan fine to ~10k chunks · English only · single-user, single-process |
 
 ---
