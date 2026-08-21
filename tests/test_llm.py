@@ -8,7 +8,9 @@ from dataclasses import replace
 import pytest
 
 from research_agent import db
-from research_agent.config import TRAP_MODEL, Config, Rung
+from research_agent.config import (
+    TRAP_MODEL, UNLIMITED_RPD, UNLIMITED_RPM, UNLIMITED_TPM, Config, Rung,
+)
 from research_agent.llm import (
     DiskCache,
     GeminiProvider,
@@ -46,21 +48,31 @@ def _client(cfg, conn, clock, keys=None, gemini=None, ollama=None) -> LLMClient:
 # ---------------------------------------------------------------------------
 #  Ladder configuration
 # ---------------------------------------------------------------------------
-def test_trap_model_on_the_volume_ladder_fails_config_validation():
-    """gemini-2.5-flash-lite is named like a volume model and capped at 20 RPD.
+def test_the_trap_model_may_not_be_declared_with_volume_scale_rpd(cfg):
+    """gemini-2.5-flash-lite is NAMED like a volume model and capped at 20 RPD.
 
-    On the volume ladder it exhausts silently and cascades failures into the agent
-    path. The config must refuse to load if anyone moves it.
+    The guard originally forbade it on the volume ladder. That was a proxy for the
+    real hazard, which is declaring it with volume-scale RPD: it then exhausts
+    silently and cascades failures into the agent path. The limiter now records the
+    true number and steps down on exhaustion, so its placement is free -- the FACT is
+    not, and this is what is actually enforced.
     """
-    bad = Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=20),))
+    bad = Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=500),))
     with pytest.raises(ValueError, match="20 RPD"):
         bad.validate()
 
 
-def test_trap_model_must_remain_on_the_synthesis_ladder():
-    bad = Config(synthesis_ladder=(Rung("gemini-3.7-flash", 5, 20),))
-    with pytest.raises(ValueError, match="synthesis ladder"):
-        bad.validate()
+def test_the_trap_model_is_allowed_on_the_volume_ladder_at_its_true_rpd(cfg):
+    Config(volume_ladder=(Rung(TRAP_MODEL, rpm=10, rpd=20),)).validate()
+
+
+def test_a_local_rung_must_be_last(cfg):
+    """A local rung is unlimited, so anything below it is unreachable."""
+    local = Rung("qwen2.5:14b", rpm=UNLIMITED_RPM, rpd=UNLIMITED_RPD,
+                 tpm=UNLIMITED_TPM, provider="ollama")
+    with pytest.raises(ValueError, match="belongs last"):
+        Config(volume_ladder=(local, Rung("gemini-3.5-flash-lite", 15, 500))).validate()
+    Config(volume_ladder=(Rung("gemini-3.5-flash-lite", 15, 500), local)).validate()
 
 
 def test_a_model_may_not_sit_on_both_ladders():

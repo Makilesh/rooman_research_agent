@@ -558,6 +558,39 @@ class LLMClient:
         except json.JSONDecodeError as exc:
             raise MalformedResponse(f"Response was not valid JSON: {exc}") from exc
 
+    def _complete_local(
+        self, model: str, prompt: str, purpose: str, ladder: Ladder,
+        schema: dict[str, Any] | None, params: dict[str, Any] | None,
+    ) -> Completion:
+        """Serve one call from a named local model, bypassing offload-mode selection.
+
+        `_complete_ollama` picks its model from the offload mode; a ladder rung names
+        the model explicitly, and that name has to win.
+        """
+        params = dict(params or {})
+        params.setdefault("temperature", self.cfg.llm_temperature)
+        params.setdefault("seed", self.cfg.llm_seed)
+        sha = DiskCache.key(model, prompt, params)
+
+        hit = self.cache.get(sha)
+        if hit is not None:
+            self.ledger.record_cached("ollama", model, LOCAL_KEY, ladder, purpose, sha)
+            return Completion(hit, self._parse(hit, schema), "ollama", model,
+                              LOCAL_KEY, ladder, True, 0)
+
+        row_id = self.ledger.try_acquire(
+            model, LOCAL_KEY, rpm=UNLIMITED, rpd=UNLIMITED,
+            purpose=f"{purpose}:local", prompt_sha=sha, provider="ollama",
+            ladder=ladder,
+        )
+        assert row_id is not None
+        return self._invoke(
+            provider_obj=self.ollama, provider_name="ollama", model=model,
+            api_key=None, timeout_s=self.cfg.ollama_timeout_s, prompt=prompt,
+            schema=schema, sha=sha, row_id=row_id, key_alias=LOCAL_KEY,
+            ladder=ladder, purpose=purpose, rpm=UNLIMITED, rpd=UNLIMITED,
+        )
+
     def _complete_ollama(
         self, prompt: str, purpose: str, ladder: Ladder,
         schema: dict[str, Any] | None, params: dict[str, Any] | None,
@@ -639,6 +672,15 @@ class LLMClient:
         est_tokens = len(prompt) // 4 + 512
 
         for rung in rungs:
+            if rung.is_local:
+                # The floor of the ladder. No key, no quota, no rotation -- if this
+                # fails there is nothing below it, so the error is the real one.
+                try:
+                    return self._complete_local(rung.model, prompt, purpose, ladder,
+                                                schema, params)
+                except Exception as exc:
+                    raise QuotaExhausted(ladder, tried) from exc
+
             sha = DiskCache.key(rung.model, prompt, params)
             hit = self.cache.get(sha)
             if hit is not None:
@@ -797,6 +839,13 @@ class LLMClient:
         aliases = list(self.api_keys) or ["(no key configured)"]
         for ladder_name in ("synthesis", "volume"):
             for rung in self.cfg.ladder(ladder_name):  # type: ignore[arg-type]
+                if rung.is_local:
+                    out.append({"ladder": ladder_name, "model": rung.model,
+                                "key": "local", "rpm_used": 0, "rpm_limit": 0,
+                                "rpm_left": 0, "rpd_used": 0, "rpd_limit": 0,
+                                "rpd_left": 0, "tpm_used": 0, "tpm_limit": 0,
+                                "tpm_left": 0, "local": True})
+                    continue
                 for alias in aliases:
                     row = {"ladder": ladder_name, "model": rung.model, "key": alias}
                     row.update(self.ledger.remaining(rung.model, alias, rung.rpm,

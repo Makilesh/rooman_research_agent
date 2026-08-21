@@ -139,14 +139,42 @@ def doctor(
         t.add_column("#", justify="right")
         t.add_column("model")
         t.add_column("RPM", justify="right")
+        t.add_column("TPM", justify="right")
         t.add_column("RPD", justify="right")
         t.add_column("note")
         for i, rung in enumerate(cfg.ladder(name), 1):  # type: ignore[arg-type]
             note = ""
             if rung.model == "gemini-2.5-flash-lite":
                 note = "named like a volume model, capped at 20 RPD"
-            t.add_row(str(i), rung.model, str(rung.rpm), str(rung.rpd), note)
+            if rung.is_local:
+                # Sentinels are an implementation detail; printing 1000000000 three
+                # times says nothing a reader wants to know.
+                t.add_row(str(i), rung.model, "-", "-", "-",
+                          "local floor — unlimited, needs no key")
+            else:
+                t.add_row(str(i), rung.model, str(rung.rpm), f"{rung.tpm:,}",
+                          str(rung.rpd), note)
         console.print(t)
+    local_rungs = [r for name in ("synthesis", "volume")
+                   for r in cfg.ladder(name) if r.is_local]  # type: ignore[arg-type]
+    for rung in local_rungs:
+        try:
+            names = [m.get("name") for m in provider.tags(timeout_s=5.0)]
+            if rung.model in names:
+                _ok(f"local floor `{rung.model}` is reachable",
+                    "the ladder cannot run out of quota while Ollama is up")
+            else:
+                _fail(f"local floor `{rung.model}` is not pulled",
+                      f"run: ollama pull {rung.model}")
+                failures += 1
+        except Exception:
+            _warn(f"local floor `{rung.model}` unavailable — Ollama is not running",
+                  "Ollama does not auto-start on Windows; run `ollama serve`. "
+                  "Without it the ladder can exhaust.")
+
+    if cfg.synthesis_falls_back_to_volume:
+        _ok("synthesis falls back to the volume ladder when drained",
+            "one-directional: volume work never escalates to synthesis models")
     _ok("ladder placement validated", "Config.validate() enforces the 2.5-flash-lite rule")
 
     if keys:
@@ -155,15 +183,19 @@ def doctor(
         try:
             probe = LLMClient(cfg=cfg, conn=conn, api_keys=keys)
             live = probe.live_models()
+            # Local rungs are not Gemini models; ListModels knows nothing of them.
             missing = [r.model for name in ("synthesis", "volume")
-                       for r in cfg.ladder(name) if r.model not in live]
+                       for r in cfg.ladder(name)
+                       if not r.is_local and r.model not in live]
             if missing:
                 _fail(f"{len(missing)} ladder model(s) do not exist on this API",
                       ", ".join(missing))
                 failures += 1
             else:
-                _ok(f"all {len(cfg.synthesis_ladder) + len(cfg.volume_ladder)} ladder "
-                    f"models exist", f"checked against {len(live)} live models")
+                n_remote = sum(1 for name in ("synthesis", "volume")
+                               for r in cfg.ladder(name) if not r.is_local)
+                _ok(f"all {n_remote} Gemini ladder models exist",
+                    f"checked against {len(live)} live models")
         except Exception as exc:
             _warn("could not verify ladder models", f"{type(exc).__name__}: {exc}")
 

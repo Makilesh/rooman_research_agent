@@ -21,8 +21,8 @@ verified without spending a token. Runs on a local model with **no API key at al
 | **Rate-limit rejections, run 1 (607 billed calls)** | **0** |
 | **Daily answer capacity, 4 keys** | **4,480 calls** before the agent gives up |
 | Recall@5 — hybrid + rerank *(LLM-free)* | **0.646**, up from 0.479 single-retriever |
-| Tests | 157, no network, no model downloads |
-| Design decisions logged | 76, each with evidence |
+| Tests | 164, no network, no model downloads |
+| Design decisions logged | 78, each with evidence |
 
 **What is deliberately *not* claimed:** multi-hop synthesis. Measured at 1.00 papers
 per multi-hop answer on **both** providers — see [§12](#12--limitations).

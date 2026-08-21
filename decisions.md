@@ -2204,3 +2204,91 @@ that refusing would genuinely serve the user better. That has not been measured.
 models rather than failing -- 480 calls of capacity becomes 4,480 -- and the reverse
 is forbidden, because judging on reasoning quota is the failure the split exists to
 prevent."
+
+---
+
+## D-153 · The 2.5-flash-lite placement rule was retired, and why that is now safe
+**Date:** 2026-08-21
+**Context:** The user asked for `gemini-2.5-flash-lite` on the **volume** ladder.
+`Config.validate()` raised on exactly that, and three tests enforced it. D-004 called
+its placement at the bottom of synthesis load-bearing.
+**The question worth asking is what the guard was actually protecting.** Not the
+placement -- the *fact*. The model is named like a volume model and capped at **20
+RPD, not 500**. The original danger was assuming 500, sending it volume traffic, and
+having it exhaust after twenty condensation calls with the failure surfacing somewhere
+unrelated.
+
+**That danger no longer exists, for reasons built since D-004:**
+- the config records `rpd=20`, confirmed against the account's published limits;
+- the limiter enforces the true number rather than an assumed one;
+- exhaustion steps down a rung instead of cascading;
+- a 429 rotates rather than aborting (D-149);
+- there is now an unlimited local rung beneath everything (D-154).
+
+**Decision:** move it to the volume ladder as asked, and rewrite the assertion to
+guard the fact instead of the position -- any declaration giving it `rpd > 20` still
+raises. The protection survives; the obsolete constraint does not.
+**Consequence:** the synthesis ladder loses a rung (480 -> 400 calls/day across four
+keys) and volume gains 80. Answer quality is *better* protected by this, not worse:
+the rung that left synthesis was its weakest, and synthesis now falls through to the
+whole volume ladder anyway.
+**Evidence:** `test_the_trap_model_may_not_be_declared_with_volume_scale_rpd`,
+`test_the_trap_model_is_allowed_on_the_volume_ladder_at_its_true_rpd`.
+**Revisit if:** the published RPD ever changes. The guard checks the number, so it
+will keep working.
+**README line:** "The 2.5-flash-lite guard now protects the fact rather than the
+placement: it may sit anywhere, but never be declared with volume-scale RPD."
+
+---
+
+## D-154 · A local rung at the bottom, so quota can never end the run
+**Date:** 2026-08-21
+**Decision:** the volume ladder ends in `qwen2.5:14b` served by Ollama -- no key, no
+quota, no rotation. Since synthesis falls through to volume (D-152), the complete
+chain for any task is:
+
+```
+3.7-flash -> 3.6 -> 3.5 -> 3-flash-preview -> 2.5-flash        (400/day, 4 keys)
+   -> 3.5-flash-lite -> 3.1-flash-lite                        (4000/day)
+   -> 2.5-flash-lite                                          (80/day)
+   -> qwen2.5:14b, local                                      (unlimited)
+```
+
+**The agent can no longer fail for lack of quota.** It can only fail because Ollama is
+not running -- which is a different problem with a different fix, and `doctor` reports
+it explicitly.
+**Two invariants enforced in `validate()`:**
+- a local rung must be **last**. It is unlimited, so anything below it is unreachable,
+  and a silently unreachable fallback is worse than no fallback.
+- a model may still not appear on both ladders, so the local rung lives only on
+  volume; synthesis reaches it by falling through.
+**Implementation note worth recording:** `_complete_ollama` picks its model from the
+offload mode, which is right for the default path and wrong for a ladder rung that
+names its model explicitly. `_complete_local` exists so the rung's name wins. Reusing
+the former would have silently served `llama3.1:8b` wherever the ladder said
+`qwen2.5:14b` -- the ladder would have looked correct and been a lie.
+**Measured, draining the real shape against four keys:** every rung consumed exactly
+its published capacity in order -- 80 per synthesis rung, 2000 per 500-RPD volume
+rung, 80 for 2.5-flash-lite -- before the local floor took over and did not exhaust.
+**README line:** "The ladder ends in a local model, so the agent cannot fail for lack
+of quota -- only because Ollama is not running, which `doctor` says plainly."
+
+---
+
+## D-155 · Ollama does not run by default, and the local rung depends on it
+**Date:** 2026-08-21
+**Measured on this machine:** no `ollama.exe` process, no entry in the HKCU `Run` key,
+no Windows service. Ollama runs **only** when something launches it -- `ollama serve`,
+or implicitly `ollama run` / `ollama list`, which spawn the server that then holds the
+caller's stdout pipe (D-105).
+**Why it matters now:** the local rung is the floor of the ladder, and a floor that is
+usually absent is not a floor. The agent's "cannot fail for lack of quota" property is
+conditional on a server that is not running after a reboot.
+**Decision:** do not auto-start it. Spawning a daemon is not the agent's job, and
+D-105 is a direct record of what shelling out to the CLI costs. `doctor` reports the
+local rung as unavailable when the server is down, and the ladder raises the real
+error rather than a quota error when it cannot reach it.
+**Consequence for anyone reading the quota numbers:** the unlimited floor requires
+`ollama serve` to be running. On a fresh boot it is not.
+**README line:** "Ollama does not auto-start on Windows -- no service, no Run key -- so
+the local fallback rung is only a floor while `ollama serve` is up."
