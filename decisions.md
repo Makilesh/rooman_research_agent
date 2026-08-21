@@ -2292,3 +2292,57 @@ error rather than a quota error when it cannot reach it.
 `ollama serve` to be running. On a fresh boot it is not.
 **README line:** "Ollama does not auto-start on Windows -- no service, no Run key -- so
 the local fallback rung is only a floor while `ollama serve` is up."
+
+---
+
+## D-156 · CORRECTION: the Gemini conversational gap is real, not provider load
+**Date:** 2026-08-21
+**What I claimed in D-147 and in the README:** conversational route accuracy came out
+lower on Gemini (7/13, 8/13) but both runs coincided with `503 UNAVAILABLE` windows, so
+I declined to call Gemini worse conversationally and said a clean re-run was the
+honest next step.
+
+**I have now run it a third time, in materially better conditions, and the claim does
+not survive.**
+
+| run | 503s | p50 latency | conversational |
+|---|---:|---:|---:|
+| 1 | 14 | — | 7/13 |
+| 2 | 32 | 57 s | 8/13 |
+| 3 | **13** | **22 s** | **7/13** |
+
+Run 3 had the fewest failures and less than half the latency of run 2, and scored the
+same as run 1. **There is no relationship between provider load and the conversational
+number.** Load was a plausible confound and it was wrong; three runs is enough to say
+so.
+
+**Where the gap actually is.** It localises entirely to scenario A:
+
+| turn | Ollama | Gemini | depends on condensation? |
+|---|---|---|---|
+| A1 "What problem does LoRA solve?" | refuse | refuse | **no** — turn 1 skips condensation |
+| A2 "How does the quantised version reduce memory further?" | answer | refuse | yes |
+| A3 "What does it report for a 65B model?" | answer | abstain | yes |
+| A4 "Does that cost quality?" | answer | refuse | yes |
+
+A1 fails identically on both, and must: turn 1 skips condensation, so the query,
+retrieval and rerank score are byte-identical regardless of provider, and the route is
+decided by a local cross-encoder score. Turns 2-4 are the condensation-dependent ones,
+and they are exactly the ones that diverge.
+
+**The finding underneath, which is the useful part.** Gemini's condensations pass the
+drift guard -- **0/13 drift on every run, both providers** -- and still retrieve worse
+on this corpus. The guard prevents a rewrite from introducing a *hallucinated* term.
+It does not, and cannot, ensure the rewrite is a *good query*. Those are different
+properties, and I had been treating a clean drift rate as evidence for both.
+**Decision:** correct the README rather than leave a comfortable explanation standing.
+The single-turn story is unambiguous -- Gemini wins on every metric, 1.000 route
+accuracy three times running -- and the conversational story is a real regression that
+I do not yet have a mechanism for.
+**What would settle it, not done:** log the condensed query for every turn in
+`eval` (currently only `chat-eval` writes them) and diff Ollama's rewrites against
+Gemini's on the same history. That is a small change and the obvious next step.
+**README line:** "Gemini scores lower conversationally, and it is not provider load --
+three runs across very different load conditions gave 7, 8 and 7. The gap sits in the
+condensation-dependent turns: those rewrites pass the drift guard and still retrieve
+worse, because passing the guard and being a good query are different properties."

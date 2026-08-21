@@ -1,2 +1,0 @@
-  OK   12 gold labels validated
-─────────────────── 1 · Retrieval ablation (zero LLM calls) ───────────────────

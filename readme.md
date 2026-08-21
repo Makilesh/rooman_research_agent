@@ -19,7 +19,7 @@ verified without spending a token. Runs on a local model with **no API key at al
 | **Citation precision** | 0.882 local · **0.952–1.000** Gemini (2 runs) |
 | **Condensation drift rate** | **0/13** — the target was 0 |
 | **Rate-limit rejections, run 1 (607 billed calls)** | **0** |
-| **Daily answer capacity, 4 keys** | **4,480 calls** before the agent gives up |
+| **Daily answer capacity, 4 keys** | 4,480 API calls, then an **unlimited local floor** |
 | Recall@5 — hybrid + rerank *(LLM-free)* | **0.646**, up from 0.479 single-retriever |
 | Tests | 164, no network, no model downloads |
 | Design decisions logged | 78, each with evidence |
@@ -479,25 +479,25 @@ number to its source: [`outputs/eval_report.md`](outputs/eval_report.md).
 
 Identical corpus, thresholds and retrieval; only the generator changed.
 
-Gemini was run **twice**, independently, so the spread is visible rather than a
-single observation being presented as a point estimate.
+Gemini was run **three times**, independently, so the spread is visible rather than a
+single observation presented as a point estimate.
 
-| Metric | Local | Gemini run 1 | Gemini run 2 |
-|---|---:|---:|---:|
-| Citation precision | 0.882 | **1.000** | **0.952** |
-| Fact coverage | 0.660 | **0.881** | **0.850** |
-| Route accuracy, single-turn | 0.917 | **1.000** | **1.000** |
-| Abstention accuracy | 1.000 | 1.000 | 1.000 |
-| Invented citations | 0 | 0 | 0 |
-| Condensation drift | 0/13 | 0/13 | 0/13 |
-| Papers per multi-hop answer | 1.00 | 1.00 | 1.00 |
-| Route accuracy, conversational | **10/13** | 7/13 | 8/13 |
-| Recall@5 *(LLM-free)* | 0.646 | 0.646 | 0.646 |
+| Metric | Local | Gemini ×3 |
+|---|---:|---:|
+| Route accuracy, single-turn | 0.917 | **1.000 · 1.000 · 1.000** |
+| Citation precision | 0.882 | **1.000 · 0.952 · 1.000** |
+| Fact coverage | 0.660 | **0.881 · 0.850 · 0.881** |
+| Abstention accuracy | 1.000 | 1.000 · 1.000 · 1.000 |
+| Invented citations | 0 | 0 · 0 · 0 |
+| Condensation drift | 0/13 | 0/13 · 0/13 · 0/13 |
+| Papers per multi-hop answer | 1.00 | 1.00 · 1.00 · 1.00 |
+| Route accuracy, conversational | **10/13** | 7/13 · 8/13 · 7/13 |
+| Recall@5 *(LLM-free)* | 0.646 | 0.646 · 0.646 · 0.646 |
 
-**Single-turn route accuracy of 1.000 reproduced across both runs**, as did 4/4
-abstention, zero invented citations and zero drift. Citation precision and fact
-coverage moved a little between runs — consistent with retries under provider load,
-and reported as a range for that reason.
+**Single-turn route accuracy of 1.000 reproduced all three times**, as did 4/4
+abstention, zero invented citations and zero drift. Gemini wins every single-turn
+metric and loses the conversational one — consistently enough, across three runs, that
+neither result is noise.
 
 The retrieval row is identical **by construction** — which is exactly why it is
 measured separately. Only generation columns move with the model.
@@ -510,13 +510,25 @@ given the cross-document rule and passages from two papers in its context, still
 answers from one. That **rules out model capability** as the explanation and points at
 context construction.
 
-> **One comparison I will not make.** Conversational route accuracy came out lower on
-> Gemini in both runs (7/13, 8/13) — but both coincided with provider-load windows:
-> 14 and 32 occurrences of `503 UNAVAILABLE`, plus dropped connections, pushing p95
-> turn latency to 145 s. Key rotation kept the runs alive, but a turn served after
-> several failed attempts is not the same experiment as one served first time.
-> **I am not claiming Gemini is worse conversationally.** I attempted the clean re-run
-> and the provider was loaded again; it remains the honest next step.
+> **Gemini is genuinely worse conversationally, and I first got the reason wrong.**
+> I attributed it to provider load. A third run in materially better conditions
+> refutes that:
+>
+> | run | 503s | p50 latency | conversational |
+> |---|---:|---:|---:|
+> | 1 | 14 | — | 7/13 |
+> | 2 | 32 | 57 s | 8/13 |
+> | 3 | **13** | **22 s** | **7/13** |
+>
+> No relationship between load and the number. The gap localises entirely to the
+> **condensation-dependent turns** of scenario A. Turn 1, which skips condensation, is
+> byte-identical across providers and fails on both — as it must, since it routes on a
+> local rerank score. Turns 2–4 diverge.
+>
+> The useful finding underneath: Gemini's rewrites score **0/13 drift** — a perfect
+> guard result — and still retrieve worse. The drift guard prevents a rewrite
+> introducing a *hallucinated* term; it cannot ensure the rewrite is a *good query*.
+> Those are different properties, and a clean drift rate is not evidence for both.
 
 ---
 
@@ -525,10 +537,17 @@ context construction.
 Two ladders, split by **purpose** rather than capability alone, because a
 conversational turn costs roughly one synthesis call plus two to four volume calls.
 
-| Ladder | Ordered by | Serves | Models | RPM | TPM | RPD |
-|---|---|---|---|---:|---:|---:|
-| **Synthesis** | capability | answer generation | `3.7-flash` → `3.6` → `3.5` → `3-flash-preview` → `2.5-flash` → `2.5-flash-lite` | 5–10 | 250K | 20 |
-| **Volume** | daily capacity | condensation, judging, rewriting, decomposition, clarification | `3.5-flash-lite` → `3.1-flash-lite` | 15 | 250K | 500 |
+| Ladder | Ordered by | Serves | Models |
+|---|---|---|---|
+| **Synthesis** | capability | answer generation | `3.7-flash` → `3.6` → `3.5` → `3-flash-preview` → `2.5-flash` |
+| **Volume** | daily capacity | condensation, judging, rewriting, decomposition, clarification | `3.5-flash-lite` → `3.1-flash-lite` → `2.5-flash-lite` → **`qwen2.5:14b` (local)** |
+
+| model | RPM | TPM | RPD |
+|---|---:|---:|---:|
+| `gemini-3.7 / 3.6 / 3.5 / 3-preview / 2.5-flash` | 5 | 250K | 20 |
+| `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` | 15 | 250K | 500 |
+| `gemini-2.5-flash-lite` | 10 | 250K | **20** ⚠️ |
+| `qwen2.5:14b` (local) | — | — | unlimited |
 
 **Three limits are enforced, not two.** RPM usually binds first — five requests a
 minute of 8k-token prompts is 40K against a 250K TPM ceiling — which is exactly why
@@ -545,10 +564,10 @@ Separating them means **answer quality degrades last**. Verified from the ledger
 every non-synthesis call sits on the volume ladder, **zero misrouted**.
 
 > ⚠️ **`gemini-2.5-flash-lite` is a trap.** Named like a volume model, capped at
-> **20 RPD**, not 500. On the volume ladder it exhausts silently after twenty
-> condensation calls and cascades failures into the agent path. It sits at the
-> **bottom of the synthesis ladder**, `Config.validate()` raises if anyone moves it,
-> and three tests cover the placement.
+> **20 RPD**, not 500. The danger was never its placement — it was *assuming 500*,
+> sending it volume traffic, and having it exhaust after twenty calls with the failure
+> surfacing somewhere unrelated. `Config.validate()` therefore guards the **fact**: it
+> may sit on either ladder, but any declaration giving it `rpd > 20` raises.
 
 ### Verified against the real API
 
@@ -568,19 +587,41 @@ Draining keys before rungs, so capability degrades last.
 
 ### The fallback chain, end to end
 
-When every synthesis rung is drained the call is served by a **volume** model rather
-than failing. Answer quality degrades; the agent keeps working. Measured by draining
-the full ladder against four keys:
+When every synthesis rung is drained the call is served by a **volume** model, and
+when those drain, by a **local** one. Answer quality degrades; the agent keeps working.
 
-| stage | calls/day |
+```
+3.7-flash → 3.6 → 3.5 → 3-flash-preview → 2.5-flash     400/day   synthesis
+   ↓  (drained — degrade)
+3.5-flash-lite → 3.1-flash-lite                        4,000/day   volume
+   ↓
+2.5-flash-lite                                            80/day   volume
+   ↓
+qwen2.5:14b, local                                     unlimited   floor
+```
+
+Measured by draining the real ladder shape against four keys — every rung consumed
+exactly its published capacity, in order, before stepping down:
+
+| rung | calls/day |
 |---|---:|
-| Synthesis ladder — 6 rungs × 20 RPD × 4 keys | 480 |
-| Degraded onto volume — 2 rungs × 500 RPD × 4 keys | 4,000 |
-| **Total before the agent gives up** | **4,480** |
+| each of 5 synthesis rungs | 80 (20 RPD × 4 keys) |
+| each 500-RPD volume rung | 2,000 |
+| `2.5-flash-lite` | 80 |
+| **`qwen2.5:14b`** | **unlimited** |
 
-Each rung drained exactly 80 (20 RPD × 4 keys) in strict capability order before
-stepping down. The fallback turns a 480-call ceiling into 4,480 — a **9.3×** increase
-in how long the agent keeps answering.
+**The agent can no longer fail for lack of quota.** It can only fail because Ollama is
+not running — a different problem, with a different fix, which `doctor` reports
+explicitly.
+
+> **Ollama does not auto-start on Windows** — no service, no `Run` key entry. It runs
+> only when something launches it. The unlimited floor is therefore only a floor while
+> `ollama serve` is up, and `doctor` says so plainly rather than letting you believe
+> in a fallback that is not there.
+
+Two invariants are enforced in `validate()`: a local rung must be **last** (it is
+unlimited, so anything below it is unreachable — a silently unreachable fallback is
+worse than none), and no model may appear on both ladders.
 
 > **The fallback is deliberately one-directional.** Synthesis exhausted → use volume
 > models. Volume exhausted → **never** use synthesis models; volume work fails
