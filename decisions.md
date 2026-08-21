@@ -2406,3 +2406,67 @@ coupling. Both are more than a tuning change.
 **README line:** "The conversational gap is not condensation and not provider load: a
 judge that accepts the first retrieval denies the router a rewritten query, and the
 router then refuses on a score the rewrite would have lifted."
+
+---
+
+## D-158 · Submission audit: five defects found by reading the repo as a reviewer
+**Date:** 2026-08-21
+Asked whether the repo was ready to submit, I checked it the way a reviewer would --
+clone it clean, follow the README, and cross-reference every claim against the
+committed artifacts -- rather than re-reading my own summary of it. Five things were
+wrong, and four of them were invisible from inside the build.
+
+**1. `outputs/eval_report.md` was mislabelled.** The header printed
+`cfg.ollama_model` unconditionally, so a Gemini run produced a file headed
+*"Generation: `llama3.1:8b` via Ollama"* over Gemini's numbers -- citation precision
+1.000, fact coverage 0.881, single-turn route 1.000, all of which the README's own
+comparison table attributes to Gemini, not to the local model. The one artifact a
+reviewer cross-references against the README contradicted it. `GenerationMetrics` now
+carries the provider and model that actually served the run, and the report prints
+those. The traceability row saying *"Gemini results -- TBD, no Gemini call has been
+made"* was stale by three full Gemini runs; it now names the provider that produced
+sections 2-3.
+
+**2. Both providers wrote the same transcript filenames.** Whichever ran last owned
+`outputs/conversations/*.md`, and Gemini ran last. The committed showcase scenario --
+scenario A, the coreference gate the whole design is built around -- showed **four
+refusals in four turns**, including a refusal of *"What problem does LoRA solve?"*,
+a question the corpus plainly answers and the default path answers at 0.9857. A
+reviewer opening the flagship deliverable saw the agent fail completely. The
+unsuffixed name now belongs to the Ollama path, which is both the default and the
+only one reproducible without a key; other providers write `{scenario}.{provider}.md`.
+Same rule for `eval_report.md`.
+
+**3. Nine of twelve committed answers reported `Latency: 0 ms`.** Two cache layers
+exist and the eval harness cleared one. `answer_cache` short-circuits a whole turn;
+the `DiskCache` under `.cache/llm` short-circuits an individual LLM call on
+sha256(model+prompt). With only the first cleared, **557 of 1520 calls were served
+from disk at a recorded 0 ms**, so artifacts reported zero for turns that genuinely
+cost seconds. The harness's own comment claimed the numbers "describe the pipeline
+rather than the cache's history"; half of that was false. `evaluate.drop_caches()`
+now empties both and reports what it discarded, and `Answer.cached` labels a genuine
+cache hit rather than letting a bare zero imply a broken metric.
+
+**4. Seven Makefile targets printed "not yet implemented (Step N)".** `fetch-corpus`,
+`ingest`, `index`, `ask`, `chat`, `eval`, `eval-retrieval` -- every one implemented in
+the CLI for phases, every one still a Step-1 stub in the Makefile, all seven
+advertised as working by `make help`. Directly against the spec's no-placeholder rule,
+and it makes a finished repo read as abandoned. All wired to their real commands.
+
+**5. The README's conversational route accuracy was stale.** It claimed 10/13 local;
+the measured value on current code is **9/13**. Two independent cache-cleared runs
+produced byte-identical condensations, final queries, loop counts, scores and routes,
+so this is not run-to-run variance -- the number simply predated a change and was
+never re-measured.
+
+**Why this is worth an entry.** Four of the five are the same failure: an artifact and
+a claim drifted apart, and nothing in the build checked them against each other.
+Tests passed throughout -- 165 of them -- because every one tests code, and none of
+these were code defects. **What I would add, not built:** a `verify-artifacts` command
+that re-reads `outputs/` and fails when a committed number disagrees with the README,
+so the traceability table is enforced rather than asserted.
+**Evidence:** this file's git history, `outputs/`, and the clean-clone run in the
+scratchpad that reproduced fetch, ingest and index from the committed manifest alone.
+**README line:** "Every number in this README is regenerated from `outputs/` by a
+cold-cache run; the transcripts and the evaluation report are written per provider so
+one run cannot overwrite another's evidence."
