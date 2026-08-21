@@ -2130,3 +2130,77 @@ timezones. The fix is to make the correct comparison easy, not to weaken the sto
 **README line:** "Ledger timestamps are ISO-8601 while SQLite's own defaults are not;
 a helper exists because comparing the two by hand silently matches every row from
 today."
+
+---
+
+## D-151 · TPM is a third limit, and it was not being enforced
+**Date:** 2026-08-21
+**Context:** The account's published limits arrived as **RPM / TPM / RPD**. My ladder
+had RPM and RPD exactly right on all eight models. TPM -- 250,000 tokens per minute --
+was not tracked at all.
+**Why it had gone unnoticed:** RPM binds first under normal load. Five requests a
+minute at 8k tokens is 40k against a 250k ceiling, so TPM never fires. That is an
+argument for it being *usually* irrelevant, not for leaving it unenforced: it stops
+being irrelevant the moment prompts grow, or a 15 RPM volume model starts carrying
+long context, and the failure mode is a 429 the limiter promised would never happen.
+**Decision:** `Rung` carries `tpm`; `try_acquire` checks tokens already billed in the
+last minute plus an estimate for the request about to be made.
+**On the estimate:** token counts are only known after a call returns, so the check is
+"what has been spent" plus `len(prompt)//4 + 512`. Over-estimating costs a rung step;
+under-estimating costs a 429. Over-estimating is the correct direction to be wrong in.
+**Also recorded:** Gemini 2.5 Pro and 3.1 Pro are published at 0/0/0 on this tier.
+They are absent from both ladders rather than listed-and-skipped -- a rung the account
+cannot use is not a fallback, it is a guaranteed failed attempt on the way down.
+**Evidence:** `test_tpm_blocks_a_call_that_would_exceed_the_token_ceiling`,
+`test_tpm_window_rolls_off`, `test_cached_calls_do_not_consume_tokens`,
+`test_every_ladder_rung_declares_all_three_limits`.
+**README line:** "Three limits are enforced, not two -- RPM usually binds first, which
+is exactly why TPM is the one that gets forgotten until it produces a 429 the limiter
+promised could not happen."
+
+---
+
+## D-152 · Synthesis falls back to the volume ladder; volume never falls back to synthesis
+**Date:** 2026-08-21
+**Context:** Until now, a drained synthesis ladder raised `QuotaExhausted` and the
+turn failed. With every rung and every key spent, the agent simply stopped.
+**Decision:** when the synthesis ladder is exhausted, serve the call from the **volume**
+ladder instead. The answer gets worse; the agent keeps working. That is "answer
+quality degrades last" taken to its conclusion -- a weaker cited answer beats no
+answer, and every other guarantee (validated ids, groundedness, abstention) is
+unchanged because they are enforced in code rather than by the model.
+
+**The asymmetry is the entire point and is enforced, not merely intended.** Volume
+exhausted never escalates to synthesis. Judging and condensing on reasoning quota is
+precisely the failure the two-ladder split exists to prevent: about four turns would
+drain the answer budget, and the failure would then land on answer generation -- the
+one thing a reviewer sees. Volume work fails instead.
+`test_volume_never_falls_back_to_synthesis` asserts it.
+
+**Measured by draining the real ladder shape against four keys:**
+
+| stage | calls/day |
+|---|---:|
+| synthesis ladder — 6 rungs x 20 RPD x 4 keys | 480 |
+| degraded onto volume — 2 rungs x 500 RPD x 4 keys | 4,000 |
+| **total before the agent gives up** | **4,480** |
+
+Each rung drained exactly 80 in strict capability order before stepping down. The
+fallback is a **9.3x** increase in how long the agent keeps answering.
+
+**A second measurement worth keeping, because it looked like a bug and was not.** The
+same drain in a tight loop stopped at 260 calls, not 480 -- because RPM, not RPD,
+binds in a burst: 5 RPM x 4 keys = 20 per rung, 10 x 4 = 40 for the 2.5-flash-lite
+rung, 15 x 4 = 60 per volume rung. 20x5 + 40 + 60 + 60 = 260 exactly. Both numbers are
+correct; they measure different limits, and only the fake-clock run measures the daily
+ceiling.
+**Consequence:** degraded calls are logged as `<purpose>:degraded` and surfaced by
+`budget`, so a degraded run is visible rather than just looking cheaper. The behaviour
+is switchable via `synthesis_falls_back_to_volume` for anyone who would rather fail
+than answer with a lite model.
+**Revisit if:** measured answer quality on the volume rungs turns out to be bad enough
+that refusing would genuinely serve the user better. That has not been measured.
+**README line:** "When the synthesis ladder drains, answers are served by volume
+models rather than failing -- 480 calls of capacity becomes 4,480 -- and the reverse
+is forbidden, because judging on reasoning quota is the failure the split exists to
+prevent."

@@ -19,6 +19,7 @@ verified without spending a token. Runs on a local model with **no API key at al
 | **Citation precision** | 0.882 local · **0.952–1.000** Gemini (2 runs) |
 | **Condensation drift rate** | **0/13** — the target was 0 |
 | **Rate-limit rejections, run 1 (607 billed calls)** | **0** |
+| **Daily answer capacity, 4 keys** | **4,480 calls** before the agent gives up |
 | Recall@5 — hybrid + rerank *(LLM-free)* | **0.646**, up from 0.479 single-retriever |
 | Tests | 157, no network, no model downloads |
 | Design decisions logged | 76, each with evidence |
@@ -524,10 +525,19 @@ context construction.
 Two ladders, split by **purpose** rather than capability alone, because a
 conversational turn costs roughly one synthesis call plus two to four volume calls.
 
-| Ladder | Ordered by | Serves | Typical RPD |
-|---|---|---|---:|
-| **Synthesis** | capability | answer generation | ~20 / model |
-| **Volume** | daily capacity | condensation, judging, rewriting, decomposition, clarification | ~500 / model |
+| Ladder | Ordered by | Serves | Models | RPM | TPM | RPD |
+|---|---|---|---|---:|---:|---:|
+| **Synthesis** | capability | answer generation | `3.7-flash` → `3.6` → `3.5` → `3-flash-preview` → `2.5-flash` → `2.5-flash-lite` | 5–10 | 250K | 20 |
+| **Volume** | daily capacity | condensation, judging, rewriting, decomposition, clarification | `3.5-flash-lite` → `3.1-flash-lite` | 15 | 250K | 500 |
+
+**Three limits are enforced, not two.** RPM usually binds first — five requests a
+minute of 8k-token prompts is 40K against a 250K TPM ceiling — which is exactly why
+TPM is easy to forget. It stops being irrelevant the moment prompts grow or a 15 RPM
+volume model starts carrying long context, so all three are checked before every call.
+
+Pro models are published at `0/0/0` on this tier and are **deliberately absent** from
+both ladders: a rung the account cannot use is not a fallback, it is a guaranteed
+failed attempt on the way down.
 
 Routing volume work through synthesis models exhausts reasoning quota in about four
 turns, and the failure lands on answer generation — the one thing a reviewer sees.
@@ -555,6 +565,32 @@ request the provider would have refused for rate.
 | `gemini-3.5-flash` | 1 | `█` |
 
 Draining keys before rungs, so capability degrades last.
+
+### The fallback chain, end to end
+
+When every synthesis rung is drained the call is served by a **volume** model rather
+than failing. Answer quality degrades; the agent keeps working. Measured by draining
+the full ladder against four keys:
+
+| stage | calls/day |
+|---|---:|
+| Synthesis ladder — 6 rungs × 20 RPD × 4 keys | 480 |
+| Degraded onto volume — 2 rungs × 500 RPD × 4 keys | 4,000 |
+| **Total before the agent gives up** | **4,480** |
+
+Each rung drained exactly 80 (20 RPD × 4 keys) in strict capability order before
+stepping down. The fallback turns a 480-call ceiling into 4,480 — a **9.3×** increase
+in how long the agent keeps answering.
+
+> **The fallback is deliberately one-directional.** Synthesis exhausted → use volume
+> models. Volume exhausted → **never** use synthesis models; volume work fails
+> instead. Judging and condensing on reasoning quota is precisely the failure the
+> two-ladder split exists to prevent: four turns would drain the answer budget, and
+> the failure would then land on answer generation — the one thing a reviewer sees.
+
+Degraded calls are logged as `<purpose>:degraded` and surfaced by
+`research-agent budget`, so a degraded run is visible rather than just looking
+cheaper.
 
 <details>
 <summary><b>Three failure classes, three different responses</b></summary>
