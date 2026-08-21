@@ -5,34 +5,23 @@
   "sentences": [
     {
       "idx": 0,
-      "text": "The NormalFloat (NF) data type builds on Quantile Quantization [15] which is an information-theoretically optimal data type that ensures each quantization bin has an equal number of values assigned from the input tensor.",
+      "text": "The information theoretically optimal data type for zero-mean normal distributions with arbitrary standard deviations σ in the range [−1, 1] is computed as follows: (1) estimate the 2k + 1 quantiles of a theoretical N(0, 1) distribution to obtain a k-bit quantile quantization data type for normal distributions, (2) take this data type and normalize its values into the [−1, 1] range, (3) quantize an input weight tensor by normalizing it into the [−1, 1] range through absolute maximum rescaling.",
       "cite": [
         "p_qlora_0003"
       ],
       "verify_scores": {
-        "p_qlora_0003": 0.0026419467758387327
+        "p_qlora_0003": 0.0012793075293302536
       },
       "status": "unverified"
     },
     {
       "idx": 1,
-      "text": "The information theoretically optimal data type for zero-mean normal distributions with arbitrary standard deviations σ in the range [−1, 1] is computed as follows: (1) estimate the 2k + 1 quantiles of a theoretical N(0, 1) distribution to obtain a k-bit quantile quantization data type for normal distributions, (2) take this data type and normalize its values into the [−1, 1] range, (3) quantize an input weight tensor by normalizing it into the [−1, 1] range through absolute maximum rescaling.",
+      "text": "The NormalFloat (NF) data type builds on Quantile Quantization which is an information-theoretically optimal data type that ensures each quantization bin has an equal number of values assigned from the input tensor.",
       "cite": [
         "p_qlora_0002"
       ],
       "verify_scores": {
         "p_qlora_0002": 1.0
-      },
-      "status": "verified"
-    },
-    {
-      "idx": 2,
-      "text": "The data type is information-theoretically optimal for zero-centered normally distributed data.",
-      "cite": [
-        "p_qlora_0003"
-      ],
-      "verify_scores": {
-        "p_qlora_0003": 1.0
       },
       "status": "verified"
     }
@@ -64,6 +53,7 @@
   "n_retrieved": 3,
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_f2950488d743"
+  "latency_ms": 10328,
+  "cached": false,
+  "turn_id": "t_5b28e69694bc"
 }

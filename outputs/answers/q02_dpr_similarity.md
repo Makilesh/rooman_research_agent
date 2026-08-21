@@ -9,7 +9,7 @@ Although more expressive model forms for measuring the similarity between a ques
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 8561 ms
 - Passages in context: 2
 - Top rerank score: 0.9916
 - Sentence verification: verified 3

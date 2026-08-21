@@ -56,6 +56,11 @@ class Answer:
     latency_ms: int
     turn_id: str | None = None
     top_rerank_score: float | None = None
+    # True when this Answer was rebuilt from a cache record rather than
+    # synthesised. Without it `latency_ms=0` reads as a broken metric in the
+    # committed artifacts -- the reader sees a provider and model named, and a
+    # zero next to them, and reasonably concludes the number is invented.
+    cached: bool = False
 
     @property
     def is_refusal(self) -> bool:
@@ -223,5 +228,5 @@ def from_cached(payload: dict) -> Answer:
         context="",  # not persisted; verification already ran before caching
         provider=payload.get("provider", "cache"),
         model=payload.get("model", "cache"),
-        latency_ms=0, turn_id=payload.get("turn_id"),
+        latency_ms=0, turn_id=payload.get("turn_id"), cached=True,
     )

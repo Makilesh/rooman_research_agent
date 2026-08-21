@@ -11,4 +11,4 @@ _No citations are given, because there is nothing in the corpus to cite. This is
 - Route: `refuse`
 - Top rerank score: 0.2615
 - Retrieval loops: 2
-- Latency: 1110 ms
+- Latency: 7625 ms

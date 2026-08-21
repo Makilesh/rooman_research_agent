@@ -18,23 +18,23 @@
       "idx": 1,
       "text": "The retriever (Dense Passage Retriever [26], henceforth DPR) provides latent documents conditioned on the input, and the seq2seq model (BART [32]) then conditions on these latent documents together with the input to generate the output.",
       "cite": [
+        "p_rag_0003"
+      ],
+      "verify_scores": {
+        "p_rag_0003": 0.23792988061904907
+      },
+      "status": "unverified"
+    },
+    {
+      "idx": 2,
+      "text": "We combine a pre-trained retriever (Query Encoder + Document Index) with a pre-trained seq2seq model (Generator) and fine-tune end-to-end.",
+      "cite": [
         "p_rag_0000"
       ],
       "verify_scores": {
         "p_rag_0000": 1.0
       },
       "status": "verified"
-    },
-    {
-      "idx": 2,
-      "text": "We combine a pre-trained retriever (Query Encoder + Document Index) with a pre-trained seq2seq model (Generator) and fine-tune end-to-end.",
-      "cite": [
-        "p_rag_0003"
-      ],
-      "verify_scores": {
-        "p_rag_0003": 0.13546064496040344
-      },
-      "status": "unverified"
     }
   ],
   "sources": [
@@ -64,6 +64,7 @@
   "n_retrieved": 3,
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_94cdf738c8cb"
+  "latency_ms": 8547,
+  "cached": false,
+  "turn_id": "t_dd2ef6abfe78"
 }

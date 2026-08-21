@@ -1,47 +1,13 @@
 {
   "question": "Which section of the LoRA paper describes its 4-bit NF4 quantisation scheme?",
-  "insufficient_evidence": false,
-  "refusal_reason": null,
-  "sentences": [
-    {
-      "idx": 0,
-      "text": "The premise of the question is incorrect: the 4-bit NormalFloat (NF4) quantisation scheme is not introduced or described by the LoRA paper.",
-      "cite": [
-        "p_qlora_0000"
-      ],
-      "verify_scores": {
-        "p_qlora_0000": 0.8345417976379395
-      },
-      "status": "verified"
-    },
-    {
-      "idx": 1,
-      "text": "Instead, 4-bit NormalFloat (NF4) is introduced by the QLoRA paper as an innovation to save memory without sacrificing performance.",
-      "cite": [
-        "p_qlora_0000"
-      ],
-      "verify_scores": {
-        "p_qlora_0000": 0.9937100410461426
-      },
-      "status": "verified"
-    }
-  ],
-  "sources": [
-    {
-      "chunk_id": "p_qlora_0000",
-      "doc_id": "qlora",
-      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
-      "page_start": 1,
-      "page_end": 2,
-      "section": null,
-      "rerank_score": 0.9904775619506836,
-      "cited": true,
-      "excerpt": "QLORA: Efficient Finetuning of Quantized LLMs Tim Dettmers∗ Artidoro Pagnoni∗ Ari Holtzman Luke Zettlemoyer University of Washington {dettmers,artidoro,ahai,lsz}@cs.washington.edu We present QLORA, an efficient finetuning approach that reduces memory usage enough to finetune a 65B parameter model on a single 48GB GPU while preserving full 16-bit finetuning task performance. QLORA backpropagates gradients through a frozen, 4-bit quantized pretrained language model into Low Rank Adapters (LoRA). Our best model family, which we name Guanaco, outperforms all previous openly released models on the ..."
-    }
-  ],
+  "insufficient_evidence": true,
+  "refusal_reason": "The passages give information about LoRA but say nothing about a 4-bit NF4 quantisation scheme.",
+  "sentences": [],
+  "sources": [],
   "n_retrieved": 3,
-  "provider": "gemini",
-  "model": "gemini-3.7-flash",
-  "latency_ms": 0,
-  "turn_id": "t_df29df0fcd48"
+  "provider": "ollama",
+  "model": "llama3.1:8b",
+  "latency_ms": 3280,
+  "cached": false,
+  "turn_id": "t_87a86298df8f"
 }

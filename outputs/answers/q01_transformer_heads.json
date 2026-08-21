@@ -18,15 +18,28 @@
       "idx": 1,
       "text": "For each of these we use dk = dv = dmodel/h = 64.",
       "cite": [
+        "p_attention_0001",
         "p_attention_0002"
       ],
       "verify_scores": {
+        "p_attention_0001": 1.0,
         "p_attention_0002": 1.0
       },
       "status": "verified"
     }
   ],
   "sources": [
+    {
+      "chunk_id": "p_attention_0001",
+      "doc_id": "attention",
+      "title": "Attention Is All You Need",
+      "page_start": 3,
+      "page_end": 5,
+      "section": "3 Model Architecture",
+      "rerank_score": 0.8625832796096802,
+      "cited": true,
+      "excerpt": "Figure 1: The Transformer - model architecture. The Transformer follows this overall architecture using stacked self-attention and point-wise, fully connected layers for both the encoder and decoder, shown in the left and right halves of Figure 1, respectively. Encoder: The encoder is composed of a stack of N = 6 identical layers. Each layer has two sub-layers. The first is a multi-head self-attention mechanism, and the second is a simple, positionwise fully connected feed-forward network. We employ a residual connection [11] around each of the two sub-layers, followed by layer normalization [..."
+    },
     {
       "chunk_id": "p_attention_0002",
       "doc_id": "attention",
@@ -42,6 +55,7 @@
   "n_retrieved": 3,
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_7a50059fcc86"
+  "latency_ms": 5030,
+  "cached": false,
+  "turn_id": "t_94ec08d7ed8a"
 }

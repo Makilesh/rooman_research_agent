@@ -10,7 +10,7 @@ QLORA reduces the average memory requirements of finetuning a 65B parameter mode
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 0 ms
+- Latency: 7217 ms
 - Passages in context: 3
 - Top rerank score: 0.9675
 - Sentence verification: verified 2

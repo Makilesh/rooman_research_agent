@@ -7,6 +7,7 @@
   "n_retrieved": 3,
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 15,
-  "turn_id": "t_2493ee823336"
+  "latency_ms": 3125,
+  "cached": false,
+  "turn_id": "t_ca69e6185c0a"
 }

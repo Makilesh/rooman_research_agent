@@ -273,7 +273,8 @@ def render_answer_markdown(answer) -> str:
     lines += [
         "---", "",
         f"- Provider: `{answer.provider}` · model: `{answer.model}`",
-        f"- Latency: {answer.latency_ms} ms",
+        f"- Latency: {answer.latency_ms} ms"
+        + (" *(cache hit — not a synthesis timing)*" if answer.cached else ""),
         f"- Passages in context: {len(answer.hits)}",
     ]
     if answer.top_rerank_score is not None:
@@ -335,6 +336,7 @@ def answer_to_dict(answer, full: bool = True) -> dict:
         "provider": answer.provider,
         "model": answer.model,
         "latency_ms": answer.latency_ms,
+        "cached": answer.cached,
         "turn_id": answer.turn_id,
     }
 

@@ -1180,8 +1180,16 @@ def chat_eval(
 
     out_dir = cfg.outputs_dir / "conversations"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # The plain `{sid}.md` name belongs to the Ollama path and no other. Both
+    # providers used to write it, so whichever ran last owned the committed
+    # transcript -- a Gemini run silently replaced the showcase scenario with its
+    # own worse one, and the deliverable a reviewer opens showed four refusals on
+    # a scenario the default path answers at every turn. The default path is also
+    # the only one reproducible without a key, so it keeps the unsuffixed name.
+    tag = (provider or cfg.provider)
     for sid, lines in transcripts.items():
-        (out_dir / f"{sid}.md").write_text("\n".join(lines), encoding="utf-8")
+        name = f"{sid}.md" if tag == "ollama" else f"{sid}.{tag}.md"
+        (out_dir / name).write_text("\n".join(lines), encoding="utf-8")
 
     t = Table(show_edge=False)
     for c in ("scenario", "turn", "expected", "actual", "drift", "condensation"):
@@ -1212,7 +1220,6 @@ def chat_eval(
     # providers can be compared on identical history rather than by eye.
     import json as _json
 
-    tag = (provider or cfg.provider)
     path = out_dir / f"_condensation.{tag}.json"
     path.write_text(_json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8")
     _ok(f"wrote {path.relative_to(cfg.repo_root)}",

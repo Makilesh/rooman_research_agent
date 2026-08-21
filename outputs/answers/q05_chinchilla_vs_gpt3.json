@@ -5,7 +5,7 @@
   "sentences": [
     {
       "idx": 0,
-      "text": "We find that model size and the number of training tokens should be scaled equally: for every doubling of model size the number of training tokens should also be doubled.",
+      "text": "We find that for compute-optimal training, the model size and the number of training tokens should be scaled equally: for every doubling of model size the number of training tokens should also be doubled.",
       "cite": [
         "p_chinchilla_0000"
       ],
@@ -42,6 +42,7 @@
   "n_retrieved": 2,
   "provider": "ollama",
   "model": "llama3.1:8b",
-  "latency_ms": 0,
-  "turn_id": "t_efc3479f4677"
+  "latency_ms": 6577,
+  "cached": false,
+  "turn_id": "t_7e5b9a880fb7"
 }

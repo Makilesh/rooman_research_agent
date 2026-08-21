@@ -1,14 +1,14 @@
 # Which section of the LoRA paper describes its 4-bit NF4 quantisation scheme?
 
-The premise of the question is incorrect: the 4-bit NormalFloat (NF4) quantisation scheme is not introduced or described by the LoRA paper.[^1] Instead, 4-bit NormalFloat (NF4) is introduced by the QLoRA paper as an innovation to save memory without sacrificing performance.[^1]
+**The sources do not contain an answer to this question.**
 
-## Sources
+The passages give information about LoRA but say nothing about a 4-bit NF4 quantisation scheme.
 
-[^1]: QLoRA: Efficient Finetuning of Quantized LLMs · pp.1-2 — `p_qlora_0000`
+_No citations are given, because there is nothing in the corpus to cite. This is the intended behaviour, not a failure._
 
 ---
 
-- Provider: `gemini` · model: `gemini-3.7-flash`
-- Latency: 0 ms
+- Provider: `ollama` · model: `llama3.1:8b`
+- Latency: 3280 ms
 - Passages in context: 3
-- Sentence verification: verified 2
+- Top rerank score: 0.9007
