@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 import json
 from dataclasses import replace
 
@@ -665,3 +667,50 @@ def test_drop_caches_is_safe_when_nothing_was_ever_cached(cfg, conn):
 
     assert not cfg.llm_cache_dir.exists()
     assert evaluate.drop_caches(cfg, conn) == (0, 0)
+
+
+def test_gemini_client_is_built_with_a_request_timeout(monkeypatch):
+    """Regression: `timeout_s` was accepted and dropped on the Gemini path.
+
+    The Ollama path passed it to httpx; this one built a client with the SDK's
+    default of no timeout at all. One hung request then blocked the process
+    indefinitely and took the fallback ladder with it -- the ledger held a
+    `synthesise` row with ok=NULL that never resolved and no walk to the local
+    floor. A rung you can never time out of is not a rung.
+    """
+    from research_agent import llm as llm_mod
+
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, api_key, http_options=None):
+            captured["http_options"] = http_options
+
+    fake_types = types.SimpleNamespace(HttpOptions=lambda timeout: {"timeout": timeout})
+    fake_genai = types.SimpleNamespace(Client=_FakeClient, types=fake_types)
+    monkeypatch.setitem(sys.modules, "google", types.SimpleNamespace(genai=fake_genai))
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    provider = llm_mod.GeminiProvider()
+    provider._client("k", timeout_s=45.0)
+
+    assert captured["http_options"] == {"timeout": 45_000}, (
+        "HttpOptions.timeout is milliseconds and must carry cfg.gemini_timeout_s"
+    )
+
+
+@pytest.mark.parametrize("message", [
+    "ReadTimeout",
+    "Request timed out",
+    "504 deadline exceeded",
+])
+def test_a_timed_out_request_is_transient_so_the_ladder_walks_on(message):
+    """A timeout must not be mistaken for a bad key or an exhausted quota."""
+    from research_agent.llm import (
+        is_permanent_key_error, is_rate_limited, is_transient_error,
+    )
+
+    assert is_transient_error(message)
+    assert not is_rate_limited(message)
+    assert not is_permanent_key_error(message)

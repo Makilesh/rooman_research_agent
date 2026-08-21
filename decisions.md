@@ -2508,3 +2508,87 @@ reach the README. Related: [[D-158]].
 **README line:** "Refusing on score and abstaining after synthesis count as the same
 correct outcome -- no answer, no citations -- and that rule has one implementation
 used by every command that reports it."
+
+---
+
+## D-160 · A rung you cannot time out of is not a rung
+**Date:** 2026-08-21
+The Gemini evaluation hung. Not slowly -- completely, for ten minutes, with no output
+and no error, one minute into a thirteen-turn run.
+
+**Diagnosis from the ledger, which is why the ledger writes a row before the call and
+not after.** The last row was `gemini-3.6-flash` / `synthesise` with `ok=NULL` and
+`latency_ms=NULL`: a request that started and never returned. No rows after it. Ollama
+reported no loaded model, so nothing had fallen through to the local floor either. The
+process was blocked inside a single HTTP request.
+
+**Cause.** `GeminiProvider.generate` accepted `timeout_s` and never used it. The Ollama
+path passed its timeout to `httpx`; this path called `generate_content` with the SDK's
+default, which is no timeout at all. `cfg.gemini_timeout_s = 60.0` was dead config that
+looked live. Gemini was returning `503 UNAVAILABLE` at the time -- thirteen of them on
+`gemini-3.7-flash` -- so the degraded service was real, and one request simply never
+came back.
+
+**Why this was the worst bug in the build, despite being three lines.** The fallback
+ladder is the headline engineering claim, and `doctor` asserts *"the ladder cannot run
+out of quota while Ollama is up."* That is true about quota and was false about
+availability: an unbounded wait defeats every rung below it. The ladder cannot walk
+down from a request that never returns. All the quota accounting, the two-ladder split
+and the local floor were correct and unreachable.
+
+**Decision:** the client is constructed with `HttpOptions(timeout=...)` in
+milliseconds, carrying `cfg.gemini_timeout_s`. Timeout text was already classified
+transient (`readtimeout`, `timed out`, `deadline exceeded`), so a timeout now walks the
+ladder exactly like a 503 rather than blocking it. Two tests cover it: one asserts the
+timeout reaches the client in milliseconds, one asserts a timed-out request is
+transient and is not mistaken for a bad key or an exhausted quota.
+
+**The general lesson.** A parameter accepted and dropped is worse than one never
+offered -- it reads as configured behaviour at every call site and in `.env.example`.
+Grepping for `timeout_s` showed it threaded through every layer; only reading the leaf
+showed it stopping there. **What I would add, not built:** a test per provider that a
+hung transport surfaces as a transient error within the configured budget, so no
+provider can be added later with this same gap.
+**Evidence:** `llm_calls` rows for 2026-08-21T07:46:52Z (ok=NULL, never resolved) and
+the 503/429 error breakdown for the same window.
+**README line:** "Every provider call is bounded by a timeout, and a timeout walks the
+ladder like any other transient failure -- an unbounded wait would defeat every rung
+below it."
+
+---
+
+## D-161 · Narrowing D-157: only turn 1 is a clean cross-provider control
+**Date:** 2026-08-21
+D-157 argued that the conversational gap is the sufficiency judge, and supported it
+with "the turns where both providers fired zero retrieval loops score identically."
+Regenerating both providers cold on the current revision **falsified the supporting
+claim while confirming the conclusion**, so the entry needs narrowing rather than
+reversing.
+
+**What broke.** Two zero-loop turns no longer match: C t2 scores 0.9511 against 0.9925
+and D t3 scores 0.8404 against 0.8459. Zero loops means no *rewrite* -- it does not
+mean the two providers retrieved on the same string. Condensation is itself an LLM
+call, and from turn 2 onward the condensed text differs. My original phrasing quietly
+assumed zero loops implied an identical query, and on the earlier run the condensations
+happened to agree closely enough to hide it.
+
+**What survives, and is stronger for being narrower.** Turn 1 skips condensation
+entirely, so there and only there both providers retrieve on the byte-identical user
+question. **D t1: 0.9891 and 0.9891, exactly equal**, both at zero loops -- retrieval
+is provider-independent, as it must be. **A t1: same setup, and Ollama scores 0.9857 to
+Gemini's 0.6837**, because Ollama's judge called the evidence insufficient and the loop
+rewrote the query while Gemini's accepted it. Same input, same retriever, opposite
+outcome, and the only difference is whether the judge asked for another pass. That is
+the mechanism, isolated by a single pair of turns rather than by a trend.
+
+Loop totals on the current revision: **Ollama 15, Gemini 8** (D-157 said 10, measured
+before the two-ladder change).
+
+**Decision:** keep D-157's conclusion, restate its evidence as the turn-1 control only,
+and say plainly in the README what is *not* claimed. A weaker piece of evidence stated
+accurately is worth more than a stronger one that a reviewer can falsify by opening the
+JSON -- and this one was falsifiable in about a minute.
+**Evidence:** `outputs/conversations/_condensation.{ollama,gemini}.json`, both
+regenerated cold on the same revision. Supersedes the evidence paragraph of [[D-157]].
+**README line:** "Only turn 1 skips condensation, so it is the only clean
+cross-provider control -- and it is the one that isolates the judge."

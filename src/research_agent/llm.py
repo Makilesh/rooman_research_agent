@@ -256,11 +256,22 @@ class GeminiProvider:
         self._transport = transport
         self._clients: dict[str, Any] = {}
 
-    def _client(self, api_key: str) -> Any:
+    def _client(self, api_key: str, timeout_s: float) -> Any:
         if api_key not in self._clients:
             from google import genai
+            from google.genai import types
 
-            self._clients[api_key] = genai.Client(api_key=api_key)
+            # The SDK defaults to no timeout, and `timeout_s` used to be accepted
+            # here and silently dropped -- the Ollama path honoured it, this one did
+            # not. A single hung request then blocked the process indefinitely and
+            # took the whole fallback ladder with it: the ledger showed a
+            # `synthesise` row with ok=NULL that never resolved, no further calls,
+            # and no walk down to the local floor. An unbounded wait defeats the
+            # point of having rungs to fall to. HttpOptions.timeout is milliseconds.
+            self._clients[api_key] = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=int(timeout_s * 1000)),
+            )
         return self._clients[api_key]
 
     def generate(
@@ -283,7 +294,7 @@ class GeminiProvider:
             cfg["response_mime_type"] = "application/json"
             cfg["response_schema"] = schema
 
-        resp = self._client(api_key).models.generate_content(
+        resp = self._client(api_key, timeout_s).models.generate_content(
             model=model, contents=prompt, config=cfg or None
         )
         usage = getattr(resp, "usage_metadata", None)
