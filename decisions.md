@@ -2470,3 +2470,41 @@ scratchpad that reproduced fetch, ingest and index from the committed manifest a
 **README line:** "Every number in this README is regenerated from `outputs/` by a
 cold-cache run; the transcripts and the evaluation report are written per provider so
 one run cannot overwrite another's evidence."
+
+---
+
+## D-159 · One metric, two definitions, and the README quoted the friendlier one
+**Date:** 2026-08-21
+Running `chat-eval` and `eval` back to back on the same corpus, provider and code
+produced **9/13** and **10/13** for conversational route accuracy. Same 13 turns,
+same session, two numbers.
+
+**Cause.** Two implementations of "was this route correct". `evaluate._route_ok`
+treats `refuse` and `abstain` as interchangeable when either is expected -- they are
+different mechanisms with the same outcome, no answer and no citations. `chat-eval`
+carried its own inline `expected == actual` instead. They disagreed on exactly one
+turn: **C t3, expected `refuse`, got `abstain`** -- the agent retrieved something
+above threshold, synthesised, and the model itself judged the evidence unsupportive.
+That is the outcome the scenario tests for, reached the long way.
+
+**Why this was worse than a wrong number.** The README quoted 10/13 while the
+committed artifact recorded 9/13, so the two disagreed and neither was wrong on its
+own terms. A reviewer cross-referencing them finds a contradiction and has no way to
+tell which is the claim and which is the evidence.
+
+**Decision:** `route_ok` is now public and is the single definition; `chat-eval` calls
+it. `_route_ok` stays as an alias so existing call sites keep working. **10/13 is the
+defensible number** -- counting C t3 as a failure penalises a correct refusal for
+arriving by synthesis rather than by score, and the transcript still shows the
+mechanism (`Route: abstain (expected refuse)`) so nothing is hidden by the rollup.
+
+**The general lesson, which is the reusable part.** Every metric reported in more than
+one place needs one implementation, and the check that catches this is running the two
+commands back to back and diffing -- not reading either one. Duplicated metric logic
+does not fail loudly; it produces two plausible numbers and lets the friendlier one
+reach the README. Related: [[D-158]].
+**Evidence:** `outputs/conversations/_condensation.ollama.json` and
+`outputs/eval_report.md`, regenerated together after the fix.
+**README line:** "Refusing on score and abstaining after synthesis count as the same
+correct outcome -- no answer, no citations -- and that rule has one implementation
+used by every command that reports it."
