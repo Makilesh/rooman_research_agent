@@ -451,12 +451,24 @@ class GenerationMetrics:
         return out
 
 
-def _route_ok(expected: str, actual: str) -> bool:
+def route_ok(expected: str, actual: str) -> bool:
     """Refusing on score and abstaining after synthesis are different mechanisms with
-    the same correct outcome: no answer, no citations."""
+    the same correct outcome: no answer, no citations.
+
+    Public, and the single definition of a correct route. `chat-eval` used to carry
+    its own inline `expected == actual` instead, so the same 13 turns scored 9/13
+    there and 10/13 here -- and the README quoted the friendlier one while the
+    committed artifact recorded the stricter. The turn they disagreed on was a
+    scenario that expected a refusal and got an abstention: no answer and no
+    citations either way, which is the outcome the scenario is testing for.
+    """
     if expected in {"refuse", "abstain"}:
         return actual in {"refuse", "abstain"}
     return expected == actual
+
+
+# Kept so existing call sites keep working; new code should use `route_ok`.
+_route_ok = route_ok
 
 
 def fact_coverage(answer, expected_facts: Sequence[str]) -> float:

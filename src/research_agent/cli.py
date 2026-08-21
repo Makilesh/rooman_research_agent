@@ -1144,7 +1144,7 @@ def chat_eval(
             rows.append({
                 "scenario": scenario["id"], "turn": i,
                 "expected": expected, "actual": actual,
-                "match": expected == actual,
+                "match": evaluate.route_ok(expected, actual),
                 "drifted": result.condensed.drifted,
                 "novel": sorted(result.condensed.novel_words),
                 "missing": missing, "leaked": leaked,
@@ -1353,7 +1353,7 @@ def eval_cmd(
                 rows.append((scenario["id"], i, t.get("expected_route"), turn.decision))
         convo = {
             "turns": len(rows), "drifted": drifted,
-            "route_correct": sum(1 for _, _, e, a in rows if evaluate._route_ok(e, a)),
+            "route_correct": sum(1 for _, _, e, a in rows if evaluate.route_ok(e, a)),
             "coref_ok": coref_ok, "coref_total": coref_total,
             "rows": rows,
         }
