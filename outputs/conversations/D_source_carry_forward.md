@@ -1,6 +1,6 @@
 # D_source_carry_forward — Referring to a previous answer's source by position
 
-Session `s_02b1717d482f` · corpus `e62c6925a03ad297`
+Session `s_b2c6f7e8e22d` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -21,7 +21,7 @@ We combine a pre-trained retriever (Query Encoder + Document Index) with a pre-t
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 5594 ms
+- Latency: 5530 ms
 - Passages in context: 2
 - Top rerank score: 0.9891
 - Sentence verification: verified 2
@@ -58,7 +58,7 @@ We endow pre-trained, parametric-memory generation models with a non-parametric 
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 5735 ms
+- Latency: 6203 ms
 - Passages in context: 2
 - Top rerank score: 0.8404
 - Sentence verification: verified 2

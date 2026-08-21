@@ -1,6 +1,6 @@
 # C_topic_shift_then_refusal — ReAct vs chain-of-thought, then a question the paper cannot answer
 
-Session `s_e2589b815ef4` · corpus `e62c6925a03ad297`
+Session `s_885903195205` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -21,7 +21,7 @@ _No citations are given, because there is nothing in the corpus to cite. This is
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 2765 ms
+- Latency: 2750 ms
 - Passages in context: 2
 - Top rerank score: 0.9996
 
@@ -46,7 +46,7 @@ We conduct empirical evaluations of ReAct and state-of-the-art baselines on four
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 9436 ms
+- Latency: 9344 ms
 - Passages in context: 2
 - Top rerank score: 0.9511
 - Sentence verification: verified 3
@@ -72,7 +72,7 @@ _No citations are given, because there is nothing in the corpus to cite. This is
 ---
 
 - Provider: `ollama` · model: `llama3.1:8b`
-- Latency: 3219 ms
+- Latency: 3313 ms
 - Passages in context: 3
 - Top rerank score: 0.9853
 
