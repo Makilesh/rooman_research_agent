@@ -2346,3 +2346,63 @@ Gemini's on the same history. That is a small change and the obvious next step.
 three runs across very different load conditions gave 7, 8 and 7. The gap sits in the
 condensation-dependent turns: those rewrites pass the drift guard and still retrieve
 worse, because passing the guard and being a good query are different properties."
+
+---
+
+## D-157 · CORRECTION 2: the conversational gap is the sufficiency judge, not condensation
+**Date:** 2026-08-21
+**This is the second time I have been wrong about this, and the logging the user asked
+for is what settled it.** D-147 blamed provider load; D-156 corrected that to
+condensation quality. Both were wrong.
+
+**What the instrumentation shows.** Logging the query retrieval *actually ran on* --
+not just the condensation -- exposed that the sufficiency loop rewrites the query
+again afterwards, and it is that text the router scores. The `condensed` field I had
+been logging was never the whole story.
+
+The decisive evidence is the turns where **both providers fired zero loops**:
+
+| turn | Ollama top | Gemini top |
+|---|---:|---:|
+| D t1 | 0.9891 | 0.9891 |
+| D t2 | 0.000 | 0.000 |
+| D t3 | 0.8404 | 0.8336 |
+
+Identical, as retrieval must be -- it is a local encoder over a local index. Now the
+turns where the loop counts differ:
+
+| turn | ollama loops / top | gemini loops / top | routes |
+|---|---|---|---|
+| A t1 | **1** / 0.9857 | **0** / 0.6837 | answer / refuse |
+| A t2 | **2** / 0.8213 | **1** / 0.000 | answer / refuse |
+| A t4 | **2** / 0.9898 | **1** / 0.7167 | answer / refuse |
+| B t1 | **2** / 0.9661 | **0** / 0.188 | answer / refuse |
+
+Every divergence tracks the loop count. Totals: **Ollama 15 loops, Gemini 10.**
+
+**The mechanism.** A1 is the cleanest case: turn 1 skips condensation, so both
+providers retrieve on the byte-identical raw question. Ollama's judge called the first
+retrieval *insufficient*, the loop rewrote to *"What problem does LoRA solve for large
+language models' adaptation to downstream tasks?"*, and the score rose to 0.9857.
+Gemini's judge called the same evidence *sufficient*, no rewrite happened, and the
+router then refused the raw query on 0.6837 -- below `tau_low`.
+
+**The architectural finding, which is the useful part.** The judge and the router are
+two independent gates asking overlapping questions, and the judge runs first. A judge
+that accepts early **denies the router a better query**, and the router then refuses on
+a score a rewrite would have lifted. Ollama's judge is over-eager -- D-136 recorded
+that as pure latency cost -- and here that over-eagerness is accidentally load-bearing.
+Gemini's judge is better calibrated and the pipeline is *worse* for it.
+
+**Decision:** record the mechanism; do not tune the judge to fix the number. Making
+Gemini's judge more pessimistic would be fitting to a 13-turn set, and the honest
+reading is that the gate ordering is wrong, not that one model judges badly.
+**What I would change, not built:** let the router see the *best* score across loop
+iterations rather than the last, or run the router before the judge and let a
+sub-threshold score trigger the loop rather than a refusal. Either removes the
+coupling. Both are more than a tuning change.
+**Evidence:** `outputs/conversations/_condensation.{ollama,gemini}.json`, and
+`research-agent condensation-diff` which prints the rewrites side by side.
+**README line:** "The conversational gap is not condensation and not provider load: a
+judge that accepts the first retrieval denies the router a rewritten query, and the
+router then refuses on a score the rewrite would have lifted."

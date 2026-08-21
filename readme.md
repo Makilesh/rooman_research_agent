@@ -510,25 +510,41 @@ given the cross-document rule and passages from two papers in its context, still
 answers from one. That **rules out model capability** as the explanation and points at
 context construction.
 
-> **Gemini is genuinely worse conversationally, and I first got the reason wrong.**
-> I attributed it to provider load. A third run in materially better conditions
-> refutes that:
+> **Gemini scores lower conversationally, and I was wrong about why — twice.** First
+> I blamed provider load; a third run in better conditions refuted that. Then I blamed
+> condensation quality. Instrumenting the query retrieval *actually ran on* — not just
+> the condensation — showed the real mechanism.
 >
-> | run | 503s | p50 latency | conversational |
-> |---|---:|---:|---:|
-> | 1 | 14 | — | 7/13 |
-> | 2 | 32 | 57 s | 8/13 |
-> | 3 | **13** | **22 s** | **7/13** |
+> The turns where **both** providers fired **zero** retrieval loops score identically,
+> as they must, since retrieval is a local encoder over a local index:
 >
-> No relationship between load and the number. The gap localises entirely to the
-> **condensation-dependent turns** of scenario A. Turn 1, which skips condensation, is
-> byte-identical across providers and fails on both — as it must, since it routes on a
-> local rerank score. Turns 2–4 diverge.
+> | turn | Ollama | Gemini |
+> |---|---:|---:|
+> | D t1 | 0.9891 | 0.9891 |
+> | D t2 | 0.000 | 0.000 |
+> | D t3 | 0.8404 | 0.8336 |
 >
-> The useful finding underneath: Gemini's rewrites score **0/13 drift** — a perfect
-> guard result — and still retrieve worse. The drift guard prevents a rewrite
-> introducing a *hallucinated* term; it cannot ensure the rewrite is a *good query*.
-> Those are different properties, and a clean drift rate is not evidence for both.
+> Every divergence tracks the **loop count** instead — Ollama fired 15, Gemini 10:
+>
+> | turn | ollama loops / top | gemini loops / top | routes |
+> |---|---|---|---|
+> | A t1 | 1 / 0.9857 | 0 / 0.6837 | answer / **refuse** |
+> | B t1 | 2 / 0.9661 | 0 / 0.188 | answer / **refuse** |
+>
+> A t1 is the cleanest case: turn 1 skips condensation, so both retrieve on the
+> byte-identical question. Ollama's judge called it *insufficient*, the loop rewrote
+> the query, and the score rose to 0.9857. Gemini's judge called the same evidence
+> *sufficient*, no rewrite happened, and the router refused the raw query on 0.6837.
+>
+> **The finding is architectural, not about either model.** The judge and the router
+> are two gates asking overlapping questions, and the judge runs first. A judge that
+> accepts early **denies the router a better query**. Ollama's judge is over-eager —
+> recorded elsewhere as pure latency cost — and here that is accidentally load-bearing;
+> Gemini's is better calibrated and the pipeline is worse for it. The fix is to let the
+> router see the best score across iterations, or to invert the gate order — not to
+> tune a judge against a 13-turn set.
+>
+> `research-agent condensation-diff` prints the rewrites side by side.
 
 ---
 
