@@ -629,3 +629,39 @@ def test_no_access_models_are_absent_from_both_ladders():
     cfg = Config()
     listed = {r.model for name in ("synthesis", "volume") for r in cfg.ladder(name)}
     assert not (listed & NO_ACCESS_MODELS)
+
+
+def test_drop_caches_clears_both_layers_not_just_the_semantic_one(cfg, conn):
+    """Regression: clearing only `answer_cache` left latency describing the cache.
+
+    An eval that emptied the semantic cache but left the prompt DiskCache in place
+    still served most LLM calls from disk at a recorded 0 ms, and the committed
+    transcripts reported `Latency: 0 ms` for turns that genuinely cost seconds.
+    Both layers have to go, or the numbers are about the cache's history.
+    """
+    from research_agent import evaluate
+    from research_agent.llm import DiskCache
+
+    disk = DiskCache(cfg.llm_cache_dir)
+    disk.put(DiskCache.key("m", "prompt-one", None), "answer one")
+    disk.put(DiskCache.key("m", "prompt-two", None), "answer two")
+    db.insert(conn, "answer_cache", {
+        "cache_id": "c1", "corpus_fingerprint": "fp",
+        "condensed_query": "q", "embedding": b"", "answer_json": "{}",
+    })
+    conn.commit()
+
+    n_answers, n_prompts = evaluate.drop_caches(cfg, conn)
+
+    assert (n_answers, n_prompts) == (1, 2)
+    assert conn.execute("SELECT COUNT(*) FROM answer_cache").fetchone()[0] == 0
+    assert disk.get(DiskCache.key("m", "prompt-one", None)) is None
+    assert disk.get(DiskCache.key("m", "prompt-two", None)) is None
+
+
+def test_drop_caches_is_safe_when_nothing_was_ever_cached(cfg, conn):
+    """A fresh checkout has no `.cache/llm` directory at all."""
+    from research_agent import evaluate
+
+    assert not cfg.llm_cache_dir.exists()
+    assert evaluate.drop_caches(cfg, conn) == (0, 0)

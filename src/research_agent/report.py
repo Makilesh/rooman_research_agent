@@ -569,7 +569,11 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("")
     add("No API key is required for any of it.")
 
-    path = cfg.outputs_dir / "eval_report.md"
+    # Same rule as the transcripts: the unsuffixed name belongs to the Ollama path,
+    # the only one a reviewer can reproduce without a key. A Gemini run used to
+    # overwrite it while the header still read "via Ollama".
+    name = "eval_report.md" if _prov == "ollama" else f"eval_report.{_prov}.md"
+    path = cfg.outputs_dir / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path

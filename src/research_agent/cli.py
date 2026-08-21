@@ -898,8 +898,10 @@ def answer_all(
 
     # Same reason as chat-eval: a cache that persists between runs makes the run
     # measure its own history rather than the pipeline (decisions.md D-125).
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    # Both layers, not just the semantic one -- see evaluate.drop_caches.
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
 
     wanted = set(only.split(",")) if only else None
     items = [i for i in label_set.items if not wanted or i.id in wanted]
@@ -1102,11 +1104,12 @@ def chat_eval(
     client = LLMClient(cfg=cfg, conn=conn,
                        api_keys=LLMClient.load_keys(cfg, dict(os.environ)))
 
-    # The semantic answer cache accumulates across runs and short-circuits turns,
-    # which makes two eval runs incomparable. Evaluation starts from an empty one so
-    # the numbers describe the pipeline rather than the cache's history.
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    # Both caches accumulate across runs and short-circuit work, which makes two
+    # eval runs incomparable. Evaluation starts from empty ones so the numbers
+    # describe the pipeline rather than the cache's history.
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
 
     spec = yaml.safe_load(cfg.conversations_path.read_text(encoding="utf-8"))
     wanted = set(only.split(",")) if only else None
@@ -1267,8 +1270,9 @@ def eval_cmd(
 
     # ---- generation metrics ---------------------------------------------
     console.rule("[bold]2 · Generation metrics (LLM-dependent)")
-    conn.execute("DELETE FROM answer_cache")
-    conn.commit()
+    _na, _np = evaluate.drop_caches(cfg, conn)
+    _ok(f"caches cleared ({_na} answers, {_np} prompts)",
+        "latency is measured, not served")
     models = _load_models(cfg)
     client = LLMClient(cfg=cfg, conn=conn,
                        api_keys=LLMClient.load_keys(cfg, dict(os.environ)))

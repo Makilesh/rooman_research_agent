@@ -361,6 +361,30 @@ def _conversation_turn_ones(cfg: Config) -> list[GoldItem]:
 # ---------------------------------------------------------------------------
 #  Generation-dependent metrics
 # ---------------------------------------------------------------------------
+def drop_caches(cfg, conn) -> tuple[int, int]:
+    """Empty both cache layers and report what was discarded.
+
+    There are two, and clearing only one produces numbers that look measured and
+    are not. `answer_cache` short-circuits a whole turn; the `DiskCache` under
+    `.cache/llm` short-circuits an individual LLM call on sha256(model+prompt).
+    An eval that cleared only the first still served 557 of 1520 calls from disk
+    at a recorded 0 ms, so committed transcripts reported `Latency: 0 ms` for
+    turns that genuinely cost seconds -- a figure describing the cache's history
+    rather than the pipeline's behaviour.
+    """
+    import shutil
+
+    n_answers = conn.execute("SELECT COUNT(*) FROM answer_cache").fetchone()[0]
+    conn.execute("DELETE FROM answer_cache")
+    conn.commit()
+
+    root = cfg.llm_cache_dir
+    n_prompts = sum(1 for _ in root.rglob("*.json")) if root.exists() else 0
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    return n_answers, n_prompts
+
+
 @dataclass
 class GenerationMetrics:
     """Everything that needs a model to produce. Labelled as such everywhere.
