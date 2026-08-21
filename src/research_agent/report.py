@@ -373,7 +373,9 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("")
     add(f"- Corpus fingerprint: `{labels.fingerprint_at_labelling}` · 11 papers")
     add(f"- Embedding: `{cfg.embed_model}` · Reranker: `{cfg.rerank_model}`")
-    add(f"- Generation: `{cfg.ollama_model}` via Ollama")
+    _prov = getattr(gen, "provider", "") or "unknown"
+    _model = getattr(gen, "model", "") or "unknown"
+    add(f"- Generation: `{_model}` via {_prov}")
     add(f"- Thresholds: tau_low {cfg.tau_low} · tau_high {cfg.tau_high} "
         f"· tau_verify {cfg.tau_verify}")
     add("")
@@ -551,7 +553,9 @@ def write_full_report(cfg, results, labels, evidence, gen, convo, ledger) -> Pat
     add("| Corpus statistics | `research-agent ingest` / `index` output | no |")
     add("| Sample answers | `outputs/answers/*.md` | yes |")
     add("| Conversation transcripts | `outputs/conversations/*.md` | yes |")
-    add("| Gemini results | **TBD -- no Gemini call has been made** | yes |")
+    add(f"| Provider that produced sections 2-3 | `{_prov}` / `{_model}` | yes |")
+    add("| Cross-provider comparison | run `eval` once per provider; each writes "
+        "its own `eval_report.{provider}.md` | yes |")
     add("")
 
     add("## 7 · Reproducing")

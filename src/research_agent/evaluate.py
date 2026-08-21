@@ -371,6 +371,13 @@ class GenerationMetrics:
     model's variance masquerade as a retrieval result.
     """
 
+    # Which model actually served this run. The report used to print
+    # `cfg.ollama_model` unconditionally, so a Gemini run produced a file headed
+    # "Generation: llama3.1:8b via Ollama" over Gemini's numbers -- the one
+    # artifact a reviewer cross-references against the README contradicted it.
+    provider: str = ""
+    model: str = ""
+
     n_items: int = 0
     schema_valid: int = 0
     invented_citations: int = 0

@@ -1287,6 +1287,8 @@ def eval_cmd(
             continue
 
         ans = turn.answer
+        if ans is not None and not gen.provider:
+            gen.provider, gen.model = ans.provider, ans.model
         gen.n_items += 1
         gen.schema_valid += 1
         gen.latencies.append(turn.latency_ms)

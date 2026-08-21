@@ -1,6 +1,6 @@
 # D_source_carry_forward — Referring to a previous answer's source by position
 
-Session `s_f6c8774d7d96` · corpus `e62c6925a03ad297`
+Session `s_a28ddc836b8a` · corpus `e62c6925a03ad297`
 
 ## Turn 1
 
@@ -12,7 +12,7 @@ Session `s_f6c8774d7d96` · corpus `e62c6925a03ad297`
 
 # How does RAG combine retrieval with generation?
 
-RAG combines parametric memory from a pre-trained sequence-to-sequence transformer (BART) with non-parametric memory from a dense vector index of Wikipedia accessed via a neural retriever (DPR) in an end-to-end trained probabilistic model.[^1] For an input query, the retriever uses Maximum Inner Product Search (MIPS) to identify the top-K latent documents.[^1] The seq2seq generator then conditions on these retrieved latent documents together with the input query to generate the output.[^1] Finally, RAG marginalizes over the latent documents using a top-K approximation, either on a per-output basis where the same document conditions the whole sequence, or on a per-token basis where different documents can condition different tokens.[^1]
+We combine a pre-trained retriever (Query Encoder + Document Index) with a pre-trained seq2seq model (Generator) and fine-tune end-to-end.[^1] For query x, we use Maximum Inner Product Search (MIPS) to find the top-K documents zi. For final prediction y, we treat z as a latent variable and marginalize over seq2seq predictions given different documents.[^1]
 
 ## Sources
 
@@ -20,11 +20,11 @@ RAG combines parametric memory from a pre-trained sequence-to-sequence transform
 
 ---
 
-- Provider: `gemini` · model: `gemini-3.6-flash`
+- Provider: `ollama` · model: `llama3.1:8b`
 - Latency: 0 ms
 - Passages in context: 2
 - Top rerank score: 0.9891
-- Sentence verification: verified 4
+- Sentence verification: verified 2
 
 
 ## Turn 2
@@ -41,24 +41,25 @@ RAG combines parametric memory from a pre-trained sequence-to-sequence transform
 
 **User:** Which paper was that from?
 
-*Condensed to:* `Which paper was RAG combined retrieval with generation from?`
+*Condensed to:* `Which paper was RAG combine retrieval with generation from?`
 *Drift guard:* passed — condensed within the conversation's vocabulary
 
-*Route:* `answer` (expected `answer`) — top rerank 0.834 >= tau_high 0.786
+*Route:* `answer` (expected `answer`) — top rerank 0.840 >= tau_high 0.786
 
-# Which paper was RAG combined retrieval with generation from?
+# Which paper was RAG combine retrieval with generation from?
 
-Retrieval-Augmented Generation (RAG) is introduced in the paper 'Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks' by Patrick Lewis et al.[^1] It combines retrieval and generation by pairing a pre-trained neural retriever (Dense Passage Retriever, or DPR) with a pre-trained sequence-to-sequence model (BART) as the generator.[^1]
+We endow pre-trained, parametric-memory generation models with a non-parametric memory through a general-purpose fine-tuning approach which we refer to as retrieval-augmented generation (RAG).[^1] We build RAG models where the parametric memory is a pre-trained seq2seq transformer, and the non-parametric memory is a dense vector index of Wikipedia, accessed with a pre-trained neural retriever.[^2]
 
 ## Sources
 
 [^1]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.1-2 — `p_rag_0000`
+[^2]: Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks · pp.5-6 — `p_rag_0003`
 
 ---
 
-- Provider: `gemini` · model: `gemini-3.6-flash`
+- Provider: `ollama` · model: `llama3.1:8b`
 - Latency: 0 ms
 - Passages in context: 2
-- Top rerank score: 0.8336
+- Top rerank score: 0.8404
 - Sentence verification: verified 2
 
