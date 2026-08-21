@@ -32,11 +32,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class Rung:
-    """One model on one ladder, with its published free-tier limits."""
+    """One model on one ladder, with its published free-tier limits.
+
+    Three limits, not two. TPM is the one that is easy to forget because RPM usually
+    binds first -- five requests a minute of 8k-token prompts is 40k TPM against a
+    250k ceiling. It stops being irrelevant the moment prompts grow or a volume model
+    at 15 RPM starts carrying long context, so it is tracked rather than assumed.
+    """
 
     model: str
     rpm: int
     rpd: int
+    tpm: int = 250_000
 
 
 Ladder = Literal["synthesis", "volume"]
@@ -44,24 +51,29 @@ Ladder = Literal["synthesis", "volume"]
 # Capability-ordered. Drained top to bottom, across every key on a rung before
 # stepping down (spec section 7.2a).
 SYNTHESIS_LADDER: tuple[Rung, ...] = (
-    Rung("gemini-3.7-flash", rpm=5, rpd=20),
-    Rung("gemini-3.6-flash", rpm=5, rpd=20),
-    Rung("gemini-3.5-flash", rpm=5, rpd=20),
-    Rung("gemini-3-flash-preview", rpm=5, rpd=20),
-    Rung("gemini-2.5-flash", rpm=5, rpd=20),
+    Rung("gemini-3.7-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3.6-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3.5-flash", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-3-flash-preview", rpm=5, rpd=20, tpm=250_000),
+    Rung("gemini-2.5-flash", rpm=5, rpd=20, tpm=250_000),
     # Named like a volume model, capped at 20 RPD. It belongs at the BOTTOM of the
     # synthesis ladder and nowhere else: on the volume ladder it exhausts silently
     # and cascades failures into the agent path (spec section 7.2b). Config.validate()
     # enforces this; tests/test_llm.py fails if anyone moves it.
-    Rung("gemini-2.5-flash-lite", rpm=10, rpd=20),
+    Rung("gemini-2.5-flash-lite", rpm=10, rpd=20, tpm=250_000),
 )
 
 # Capacity-ordered, not capability-ordered. Serves condensation, sufficiency
 # judging, query rewriting and decomposition.
 VOLUME_LADDER: tuple[Rung, ...] = (
-    Rung("gemini-3.5-flash-lite", rpm=15, rpd=500),
-    Rung("gemini-3.1-flash-lite", rpm=15, rpd=500),
+    Rung("gemini-3.5-flash-lite", rpm=15, rpd=500, tpm=250_000),
+    Rung("gemini-3.1-flash-lite", rpm=15, rpd=500, tpm=250_000),
 )
+
+# Gemini 2.5 Pro and 3.1 Pro are published at 0/0/0 on this tier -- no access at all.
+# They are deliberately absent rather than listed-and-skipped: a rung the account
+# cannot use is not a fallback, it is a guaranteed failed attempt on the way down.
+NO_ACCESS_MODELS = frozenset({"gemini-2.5-pro", "gemini-3.1-pro-preview"})
 
 # Named so the assertion below reads as intent rather than a string literal
 # floating inside a guard clause.
@@ -188,6 +200,11 @@ class Config:
         "cited-research-agent/0.1 (research prototype; contact via repository issues)"
     )
     fetch_timeout_s: float = 120.0
+
+    # When the synthesis ladder is fully drained, answer with a volume model rather
+    # than failing. Quality degrades; the agent keeps working. The reverse is never
+    # allowed -- see LLMClient._complete_gemini.
+    synthesis_falls_back_to_volume: bool = True
 
     # -- Web search (Phase 8, optional, default OFF) ------------------------
     # Supplementary only. The headline evaluation numbers are corpus-only, and the

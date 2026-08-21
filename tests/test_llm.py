@@ -197,19 +197,75 @@ def test_rpd_window_rolls_off_after_24h(cfg, conn, clock):
 
 
 def test_full_ladder_exhaustion_raises_a_named_error_not_a_stack_trace(cfg, conn, clock):
-    tiny = Config(
-        db_path=cfg.db_path, llm_cache_dir=cfg.llm_cache_dir,
+    """With the fallback off, a drained ladder raises a named error."""
+    tiny = replace(
+        cfg,
         synthesis_ladder=(Rung("only-model", rpm=1, rpd=1), Rung(TRAP_MODEL, rpm=1, rpd=1)),
+        synthesis_falls_back_to_volume=False,
     )
     client = _client(tiny, conn, clock, gemini=RecordingGemini())
-    client.complete("a", purpose="synthesise", ladder="synthesis", schema=SCHEMA, provider="gemini")
-    client.complete("b", purpose="synthesise", ladder="synthesis", schema=SCHEMA, provider="gemini")
+    for p in ("a", "b"):
+        client.complete(p, purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
 
     with pytest.raises(QuotaExhausted) as exc:
         client.complete("c", purpose="synthesise", ladder="synthesis",
                         schema=SCHEMA, provider="gemini")
     assert "synthesis ladder is exhausted" in str(exc.value)
     assert "Ollama path is unlimited" in str(exc.value)
+
+
+def test_exhausted_synthesis_falls_back_to_the_volume_ladder(cfg, conn, clock):
+    """Answer quality degrades last: a weaker cited answer beats no answer.
+
+    When every synthesis rung is drained the call is served by a volume model rather
+    than failing the turn.
+    """
+    tiny = replace(
+        cfg,
+        synthesis_ladder=(Rung("only-model", rpm=1, rpd=1), Rung(TRAP_MODEL, rpm=1, rpd=1)),
+        volume_ladder=(Rung("volume-model", rpm=99, rpd=99),),
+    )
+    gem = RecordingGemini()
+    client = _client(tiny, conn, clock, gemini=gem)
+    for p in ("a", "b"):
+        client.complete(p, purpose="synthesise", ladder="synthesis",
+                        schema=SCHEMA, provider="gemini")
+
+    out = client.complete("c", purpose="synthesise", ladder="synthesis",
+                          schema=SCHEMA, provider="gemini")
+    assert out.model == "volume-model"
+    assert client.degraded_calls == 1
+
+    # The ledger must show the degradation rather than an unexplained volume-model
+    # synthesis appearing in the counts.
+    purposes = {r["purpose"] for r in
+                conn.execute("SELECT purpose FROM llm_calls").fetchall()}
+    assert "synthesise:degraded" in purposes
+
+
+def test_volume_never_falls_back_to_synthesis(cfg, conn, clock):
+    """The asymmetry is the whole point of splitting the ladders.
+
+    Judging and condensing on reasoning quota drains the answer budget in about four
+    turns, and the failure then lands on answer generation. Volume work fails instead.
+    """
+    tiny = replace(
+        cfg,
+        synthesis_ladder=(Rung("big-model", rpm=99, rpd=99), Rung(TRAP_MODEL, 10, 20)),
+        volume_ladder=(Rung("small-model", rpm=1, rpd=1),),
+    )
+    gem = RecordingGemini()
+    client = _client(tiny, conn, clock, gemini=gem)
+    client.complete("a", purpose="judge", ladder="volume", schema=SCHEMA,
+                    provider="gemini")
+
+    with pytest.raises(QuotaExhausted):
+        client.complete("b", purpose="judge", ladder="volume", schema=SCHEMA,
+                        provider="gemini")
+    assert all(m != "big-model" for m, _ in gem.calls), (
+        "volume work must never touch a synthesis model"
+    )
 
 
 def test_no_keys_configured_raises_quota_exhausted_not_an_auth_crash(cfg, conn, clock):
@@ -497,3 +553,67 @@ def test_quota_exhaustion_and_key_rejection_are_different(cfg, conn, clock):
     assert is_permanent_key_error(RuntimeError("API key not valid"))
     assert not is_permanent_key_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
     assert not is_permanent_key_error(RuntimeError("503 Service Unavailable"))
+
+
+# ---------------------------------------------------------------------------
+#  Tokens per minute — the third published limit
+# ---------------------------------------------------------------------------
+def test_tpm_blocks_a_call_that_would_exceed_the_token_ceiling(cfg, conn, clock):
+    """RPM usually binds first, which is exactly why TPM is easy to forget.
+
+    Five requests a minute of 8k-token prompts is 40k against a 250k ceiling. It stops
+    being irrelevant the moment prompts grow or a 15 RPM volume model carries long
+    context.
+    """
+    tiny = replace(cfg, volume_ladder=(Rung("m", rpm=99, rpd=99, tpm=1000),),
+                   synthesis_falls_back_to_volume=False)
+    client = _client(tiny, conn, clock, gemini=RecordingGemini())
+
+    # A first call that reports 900 tokens spent.
+    row = client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha", "gemini",
+                                    "volume", tpm=1000, est_tokens=10)
+    client.ledger.finish(row, ok=True, latency_ms=1, prompt_tokens=800,
+                         completion_tokens=100)
+    assert client.ledger.tokens_used("m", "key_1") == 900
+
+    # A second call estimated at 200 tokens would exceed 1000 and is refused.
+    assert client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha2", "gemini",
+                                     "volume", tpm=1000, est_tokens=200) is None
+    # A small one still fits.
+    assert client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha3", "gemini",
+                                     "volume", tpm=1000, est_tokens=50) is not None
+
+
+def test_cached_calls_do_not_consume_tokens(cfg, conn, clock):
+    client = _client(cfg, conn, clock, gemini=RecordingGemini())
+    client.ledger.record_cached("gemini", "m", "key_1", "volume", "p", "sha")
+    assert client.ledger.tokens_used("m", "key_1") == 0
+
+
+def test_tpm_window_rolls_off(cfg, conn, clock):
+    client = _client(cfg, conn, clock, gemini=RecordingGemini())
+    row = client.ledger.try_acquire("m", "key_1", 99, 99, "p", "sha", "gemini",
+                                    "volume", tpm=1000, est_tokens=10)
+    client.ledger.finish(row, ok=True, latency_ms=1, prompt_tokens=900,
+                         completion_tokens=0)
+    assert client.ledger.tokens_used("m", "key_1") == 900
+    clock.advance(seconds=61)
+    assert client.ledger.tokens_used("m", "key_1") == 0
+
+
+def test_every_ladder_rung_declares_all_three_limits():
+    """A rung missing a limit is a rung the limiter cannot fully enforce."""
+    cfg = Config()
+    for name in ("synthesis", "volume"):
+        for rung in cfg.ladder(name):
+            assert rung.rpm > 0 and rung.rpd > 0 and rung.tpm > 0, rung.model
+
+
+def test_no_access_models_are_absent_from_both_ladders():
+    """Pro models are published at 0/0/0 on this tier. A rung the account cannot use
+    is not a fallback, it is a guaranteed failed attempt on the way down."""
+    from research_agent.config import NO_ACCESS_MODELS
+
+    cfg = Config()
+    listed = {r.model for name in ("synthesis", "volume") for r in cfg.ladder(name)}
+    assert not (listed & NO_ACCESS_MODELS)

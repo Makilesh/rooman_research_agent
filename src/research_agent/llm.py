@@ -329,6 +329,22 @@ class Ledger:
         rpd = self.conn.execute(sql, (model, key_alias, self._iso(now - RPD_WINDOW))).fetchone()[0]
         return rpm, rpd
 
+    def tokens_used(self, model: str, key_alias: str) -> int:
+        """Prompt + completion tokens billed in the last minute.
+
+        Only known after a call returns, so this measures what has already been
+        spent; the caller adds an estimate for the request it is about to make. That
+        is the correct direction to be approximate in -- over-estimating costs a rung
+        step, under-estimating costs a 429.
+        """
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(prompt_tokens, 0) + "
+            "COALESCE(completion_tokens, 0)), 0) FROM llm_calls "
+            "WHERE model = ? AND key_alias = ? AND cached = 0 AND ts >= ?",
+            (model, key_alias, self._iso(self.now() - RPM_WINDOW)),
+        ).fetchone()
+        return int(row[0] or 0)
+
     def try_acquire(
         self,
         model: str,
@@ -339,14 +355,23 @@ class Ledger:
         prompt_sha: str,
         provider: str,
         ladder: Ladder | None,
+        tpm: int | None = None,
+        est_tokens: int = 0,
     ) -> int | None:
         """Reserve one request slot, or return None immediately if saturated.
+
+        Checks all three published limits: requests per minute, tokens per minute,
+        and requests per day. RPM usually binds first -- five requests of 8k tokens is
+        40k against a 250k TPM ceiling -- but that stops being true as soon as prompts
+        grow or a 15 RPM volume model carries long context.
 
         Non-blocking on purpose. Sleeping on a saturated key while another key sits
         idle would make rotation add no real capacity at all.
         """
         used_rpm, used_rpd = self.used(model, key_alias)
         if used_rpm >= rpm or used_rpd >= rpd:
+            return None
+        if tpm and est_tokens and self.tokens_used(model, key_alias) + est_tokens > tpm:
             return None
         cur = self.conn.execute(
             "INSERT INTO llm_calls (ts, provider, model, key_alias, ladder, purpose, "
@@ -382,11 +407,14 @@ class Ledger:
         )
         self.conn.commit()
 
-    def remaining(self, model: str, key_alias: str, rpm: int, rpd: int) -> dict[str, int]:
+    def remaining(self, model: str, key_alias: str, rpm: int, rpd: int,
+                  tpm: int = 0) -> dict[str, int]:
         used_rpm, used_rpd = self.used(model, key_alias)
+        used_tpm = self.tokens_used(model, key_alias) if tpm else 0
         return {
             "rpm_used": used_rpm, "rpm_limit": rpm, "rpm_left": max(0, rpm - used_rpm),
             "rpd_used": used_rpd, "rpd_limit": rpd, "rpd_left": max(0, rpd - used_rpd),
+            "tpm_used": used_tpm, "tpm_limit": tpm, "tpm_left": max(0, tpm - used_tpm),
         }
 
 
@@ -450,6 +478,10 @@ class LLMClient:
         # this process. Not persisted: a key restored on the provider's
         # side should work again on the next run without an edit here.
         self.disabled_keys: dict[str, str] = {}
+        # Synthesis calls that had to be served by a volume model.
+        # Surfaced by `budget` so a degraded run is visible rather than
+        # silently cheaper-sounding.
+        self.degraded_calls: int = 0
         self.cache = DiskCache(self.cfg.llm_cache_dir)
         if self.ollama is None:
             self.ollama = OllamaProvider(
@@ -565,35 +597,69 @@ class LLMClient:
         self, prompt: str, purpose: str, ladder: Ladder,
         schema: dict[str, Any] | None, params: dict[str, Any] | None,
     ) -> Completion:
-        rungs: tuple[Rung, ...] = self.cfg.ladder(ladder)
+        """Walk the ladder, then -- for synthesis only -- walk the other one.
+
+        The fallback is deliberately ONE-DIRECTIONAL.
+
+        Synthesis exhausted -> use volume models. The answer gets worse; the agent
+        keeps working. That is "answer quality degrades last" taken to its conclusion:
+        a weaker cited answer beats no answer.
+
+        Volume exhausted -> NEVER use synthesis models. Judging and condensing on
+        reasoning quota is precisely the failure the two-ladder split exists to
+        prevent -- four turns would drain the budget and the failure would land on
+        answer generation, the one thing a reviewer sees. Volume work fails instead.
+        """
         if not self.api_keys:
             raise QuotaExhausted(ladder, [])
 
+        try:
+            return self._walk_ladder(self.cfg.ladder(ladder), prompt, purpose,
+                                     ladder, schema, params)
+        except QuotaExhausted:
+            if not (ladder == "synthesis" and self.cfg.synthesis_falls_back_to_volume):
+                raise
+            self.degraded_calls += 1
+            # Purpose records the degradation so the ledger shows it plainly rather
+            # than an unexplained volume-model synthesis appearing in the counts.
+            return self._walk_ladder(
+                self.cfg.ladder("volume"), prompt, f"{purpose}:degraded",
+                "volume", schema, params,
+            )
+
+    def _walk_ladder(
+        self, rungs: tuple[Rung, ...], prompt: str, purpose: str, ladder: Ladder,
+        schema: dict[str, Any] | None, params: dict[str, Any] | None,
+    ) -> Completion:
         tried: list[tuple[str, str]] = []
         transient: list[str] = []
         rate_limited: list[str] = []
+        # One token is roughly four characters of English; the completion is bounded
+        # by the schema and small next to the prompt.
+        est_tokens = len(prompt) // 4 + 512
+
         for rung in rungs:
             sha = DiskCache.key(rung.model, prompt, params)
             hit = self.cache.get(sha)
             if hit is not None:
                 alias = next(iter(self.api_keys))
-                self.ledger.record_cached("gemini", rung.model, alias, ladder, purpose, sha)
+                self.ledger.record_cached("gemini", rung.model, alias, ladder,
+                                          purpose, sha)
                 return Completion(hit, self._parse(hit, schema), "gemini", rung.model,
                                   alias, ladder, True, 0)
 
             # Drain every key on this rung before stepping down. Stepping down while
-            # another key still has quota on the current rung would throw away
-            # capability for no reason.
+            # another key still has quota throws away capability for nothing.
             for alias, api_key in self.api_keys.items():
                 if alias in self.disabled_keys:
                     continue
                 tried.append((rung.model, alias))
                 row_id = self.ledger.try_acquire(
-                    rung.model, alias, rung.rpm, rung.rpd, purpose,
-                    sha, "gemini", ladder,
+                    rung.model, alias, rung.rpm, rung.rpd, purpose, sha, "gemini",
+                    ladder, tpm=rung.tpm, est_tokens=est_tokens,
                 )
                 if row_id is None:
-                    continue  # saturated -- next key, without sleeping
+                    continue  # saturated on some limit -- next key, without sleeping
                 try:
                     return self._invoke(
                         provider_obj=self.gemini, provider_name="gemini",
@@ -603,29 +669,21 @@ class LLMClient:
                         ladder=ladder, purpose=purpose, rpm=rung.rpm, rpd=rung.rpd,
                     )
                 except KeyRejected as exc:
-                    # Permanently unusable: disable it and try the next key rather
-                    # than failing the turn while other keys are idle.
                     self.disabled_keys[alias] = str(exc)
                     continue
                 except Exception as exc:
-                    # A dropped connection or a 5xx is about the network, not the
-                    # key. Move to the next key or rung; the loop is bounded, so a
-                    # persistent outage still terminates in QuotaExhausted rather
-                    # than spinning.
                     if is_rate_limited(exc):
-                        # The provider disagrees with the local ledger. Trust it and
-                        # rotate; the mismatch is recorded in the row's error.
                         rate_limited.append(f"{rung.model}/{alias}")
                         continue
                     if is_transient_error(exc):
                         transient.append(f"{rung.model}/{alias}: {exc}")
                         continue
                     raise
+
         if transient and len(transient) == len(tried):
-            # Nothing was actually exhausted -- every attempt hit the network.
             raise RuntimeError(
-                f"Every {ladder} attempt failed with a transient network error, so "
-                f"no quota conclusion can be drawn: {transient[:3]}"
+                f"Every {ladder} attempt failed with a transient network error, so no "
+                f"quota conclusion can be drawn: {transient[:3]}"
             )
         raise QuotaExhausted(ladder, tried)
 
@@ -741,6 +799,7 @@ class LLMClient:
             for rung in self.cfg.ladder(ladder_name):  # type: ignore[arg-type]
                 for alias in aliases:
                     row = {"ladder": ladder_name, "model": rung.model, "key": alias}
-                    row.update(self.ledger.remaining(rung.model, alias, rung.rpm, rung.rpd))
+                    row.update(self.ledger.remaining(rung.model, alias, rung.rpm,
+                                                     rung.rpd, rung.tpm))
                     out.append(row)
         return out

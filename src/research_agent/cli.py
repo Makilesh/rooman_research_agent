@@ -241,13 +241,26 @@ def budget() -> None:
     )
 
     t = Table(show_edge=False)
-    for col in ("ladder", "model", "key", "RPM", "RPD"):
-        t.add_column(col, justify="right" if col in ("RPM", "RPD") else "left")
+    for col in ("ladder", "model", "key", "RPM", "TPM", "RPD"):
+        t.add_column(col, justify="right" if col in ("RPM", "TPM", "RPD") else "left")
     for row in client.budget():
-        rpm = f"{row['rpm_left']}/{row['rpm_limit']}"
-        rpd = f"{row['rpd_left']}/{row['rpd_limit']}"
-        t.add_row(row["ladder"], row["model"], row["key"], rpm, rpd)
+        t.add_row(row["ladder"], row["model"], row["key"][:12],
+                  f"{row['rpm_left']}/{row['rpm_limit']}",
+                  f"{row['tpm_left']:,}/{row['tpm_limit']:,}",
+                  f"{row['rpd_left']}/{row['rpd_limit']}")
     console.print(t)
+
+    syn = sum(r.rpd for r in cfg.synthesis_ladder) * max(len(client.api_keys), 1)
+    vol = sum(r.rpd for r in cfg.volume_ladder) * max(len(client.api_keys), 1)
+    console.print()
+    console.print(f"Daily ceiling across {len(client.api_keys) or 0} key(s): "
+                  f"[bold]{syn}[/bold] synthesis + [bold]{vol}[/bold] volume calls.")
+    degraded = db.scalar(
+        conn, "SELECT COUNT(*) FROM llm_calls WHERE purpose LIKE '%:degraded'") or 0
+    if degraded:
+        _warn(f"{degraded} synthesis call(s) were served by a volume model",
+              "the synthesis ladder was drained; answers were still produced, at "
+              "lower quality")
 
     if not client.api_keys:
         console.print(
